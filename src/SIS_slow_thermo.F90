@@ -39,7 +39,7 @@ use SIS_diag_mediator, only : query_SIS_averaging_enabled, SIS_diag_ctrl
 use SIS_diag_mediator, only : register_diag_field=>register_SIS_diag_field
 use SIS_sum_output, only : SIS_sum_out_CS, write_ice_statistics! , SIS_sum_output_init
 use SIS_sum_output, only : accumulate_bottom_input, accumulate_input_1, accumulate_input_2
-
+use MOM_coms,          only : reproducing_sum
 ! use MOM_domains,       only : pass_var
 ! ! use MOM_dyn_horgrid, only : dyn_horgrid_type, create_dyn_horgrid, destroy_dyn_horgrid
 use MOM_error_handler, only : SIS_error=>MOM_error, FATAL, WARNING, SIS_mesg=>MOM_mesg
@@ -585,6 +585,14 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, IG)
     net_melt              ! The net mass flux from the ice and snow into the
                           ! ocean due to melting and freezing integrated
                           ! across all categories, in kg m-2 s-1.
+  real, dimension(SZI_(G),SZJ_(G),2)   :: &
+    melt_nudge_mass,&       ! The mass flux over a cell surface due to sea ice nudging by hemisphere (kg s-1)
+    extent_ice              ! The area over which any sea ice exists by hemisphere (m2)
+  real, dimension(2) :: Melt_nudge_NS, extent_NS ! arrays for storing global sums of melt_nudge_mass and extent_ice
+                                                 ! respectively
+  real, dimension(2) :: Melt_nudge_ga  ! hemispheric melt nudging (kg m-2 s-1)
+  real :: melt_sum, extent_sum ! global sums
+  real :: hem ! hemisphere (1=N,2=S)
   real, dimension(SZI_(G),SZJ_(G),1:IG%CatIce)   :: heat_in, enth_prev, enth
   real, dimension(SZI_(G),SZJ_(G))   :: heat_in_col, enth_prev_col, enth_col, enth_mass_in_col
 
@@ -682,8 +690,8 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, IG)
 
     cool_nudge(:,:) = 0.0 ; IOF%melt_nudge(:,:) = 0.0
     icec(:,:) = 0.0
+    ! Read sea-ice concentration observations (units=1)
     call data_override('ICE','icec',icec_obs,CS%Time)
-
     do k=1,ncat ; do j=jsc,jec ; do i=isc,iec
       icec(i,j) = icec(i,j) + IST%part_size(i,j,k)
     enddo ; enddo ; enddo
@@ -713,6 +721,28 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, IG)
         OSS%bheat(i,j) = OSS%bheat(i,j) - cool_nudge(i,j)
       endif
     enddo ; enddo
+    ! Redistribute virtual melt used to build ice over the entire
+    ! hemispheric ice surface
+    melt_nudge_mass = 0.0; extent_ice = 0.0
+    !  sum the sea-ice melt nudging flux in each hemisphere weighted by the fractional ice coverage
+    !   and subtract from the nudging at each ice-covered point in each hemisphere
+    do j=jsc,jec; do i=isc,iec
+      hem = 1 ; if (G%geolatT(i,j) < 0.0) hem = 2
+      if (icec(i,j)>0.0) then
+         melt_nudge_mass(i,j,hem) = IOF%melt_nudge(i,j)*G%mask2dT(i,j)*G%areaT(i,j)
+         extent_ice(i,j,hem) = G%mask2dT(i,j)*G%areaT(i,j)
+      endif
+    enddo; enddo
+    melt_sum = reproducing_sum(melt_nudge_mass,sums=Melt_nudge_NS)
+    extent_sum   = reproducing_sum(extent_ice,sums=Extent_NS)
+    Melt_nudge_ga(1)=Melt_nudge_NS(1)/Extent_NS(1)
+    Melt_nudge_ga(2)=Melt_nudge_NS(2)/Extent_NS(2)
+    do j=jsc,jec; do i=isc,iec
+      hem = 1 ; if (G%geolatT(i,j) < 0.0) hem = 2
+      if (icec(i,j)>0.0 .and. Extent_NS(hem) > 0.0) then
+         IOF%melt_nudge(i,j) = IOF%melt_nudge(i,j) - Melt_nudge_ga(hem)
+      endif
+    enddo; enddo
   endif
   if (CS%do_ice_restore) then
     ! get observed ice thickness for ice restoring, if calculating qflux

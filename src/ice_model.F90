@@ -377,12 +377,13 @@ subroutine ice_model_fast_cleanup(Ice)
   if (.not.associated(Ice%fCS)) call SIS_error(FATAL, &
       "The pointer to Ice%fCS must be associated in ice_model_fast_cleanup.")
 
+  ! If applying a surface mass balance constraint, then make the adjustments here
+
+  call constrain_surface_mass_balance(Ice)
+
   ! average fluxes from update_ice_model_fast
   call avg_top_quantities(Ice%fCS%FIA, Ice%fCS%Rad, Ice%fCS%IST, &
                           Ice%fCS%G, Ice%fCS%IG)
-
-  ! If applying a surface mass balance constraint, then make the adjustments here
-  call constrain_surface_mass_balance(Ice)
 
   call total_top_quantities(Ice%fCS%FIA, Ice%fCS%TSF, Ice%fCS%IST%part_size, &
                             Ice%fCS%G, Ice%fCS%IG)
@@ -2862,6 +2863,8 @@ subroutine constrain_surface_mass_balance(Ice)
   type(fast_ice_avg_type), pointer :: FIA => NULL()
   type(SIS_hor_grid_type), pointer :: G => NULL()
   type(ice_grid_type),     pointer :: IG => NULL()
+  type(ice_state_type),     pointer :: IST => NULL()
+
   if (.not.associated(Ice%fCS)) call SIS_error(FATAL, &
       "The pointer to Ice%fCS must be associated in constrain_surface_mass_balance.")
   if (.not.associated(Ice%fCS%G)) call SIS_error(FATAL, &
@@ -2870,11 +2873,14 @@ subroutine constrain_surface_mass_balance(Ice)
       "The pointer to Ice%fCS%IG must be associated in constrain_surface_mass_balance.")
   if (.not.associated(Ice%fCS%FIA)) call SIS_error(FATAL, &
       "The pointer to Ice%fCS%FIA must be associated in constrain_surface_mass_balance.")
+  if (.not.associated(Ice%fCS%IST)) call SIS_error(FATAL, &
+      "The pointer to Ice%fCS%IST must be associated in constrain_surface_mass_balance.")
+
 
   IG => Ice%fCS%IG
-  G => Ice%fCS%G
+  G => Ice%sCS%G
   FIA => Ice%fCS%FIA
-
+  IST => Ice%fCS%IST
 
   if (Ice%constrain_pmt) then
     if (Ice%read_pmt) then
@@ -2882,22 +2888,23 @@ subroutine constrain_surface_mass_balance(Ice)
        call time_interp_external(Ice%id_pmt_north,Ice%Time,Ice%pmt_north)
     endif
     ! adjust northern hemisphere region mass balance
-    call adjust_top_mass(FIA, G, IG, Ice%pmt_north,Ice%pmt_lat_north)
+    call adjust_top_mass(FIA, IST, G, IG, Ice%pmt_north,Ice%pmt_lat_north)
     if (Ice%read_pmt) then
        ! read pmt constraint (kg s-1)
        call time_interp_external(Ice%id_pmt_south,Ice%Time,Ice%pmt_south)
     endif
     ! adjust southern hemisphere region mass balance
-    call adjust_top_mass(FIA, G, IG, Ice%pmt_south,Ice%pmt_lat_south)
+    call adjust_top_mass(FIA, IST, G, IG, Ice%pmt_south,Ice%pmt_lat_south)
     ! after adjusting PmE at high latitudes to match the prescribed value, make a corresponding adjustment to the
     ! lower latitudes
-    call adjust_top_mass(FIA, G, IG, -1.0*(Ice%pmt_north+Ice%pmt_south),Ice%pmt_lat_south,Ice%pmt_lat_north)
+    call adjust_top_mass(FIA, IST, G, IG, -1.0*(Ice%pmt_north+Ice%pmt_south),Ice%pmt_lat_south,Ice%pmt_lat_north)
   endif
 
 contains
 
-  subroutine adjust_top_mass(FIA, G, IG, pmt,lat1, lat2)
+  subroutine adjust_top_mass(FIA, IST, G, IG, pmt,lat1, lat2)
     type(fast_ice_avg_type), intent(inout) :: FIA
+    type(ice_state_type), intent(in) :: IST
     type(SIS_hor_grid_type), intent(in) :: G
     type(ice_grid_type),  intent(in)    :: IG
     real, intent(in)                    :: pmt  !< the moisture constraint for the region (kg s-1)
@@ -2908,7 +2915,7 @@ contains
 
 
     integer :: i,j,k,is,ie,js,je,ncat
-
+    real    :: I_avc
     real, dimension(SZI_(G),SZJ_(G))   :: net_in !< rate of incoming mass at the top of the sea-ice
                                                !! in units of kg m-2 s-1
     real, dimension(SZI_(G),SZJ_(G))   :: net_out !< rate of incoming mass at the top of the sea-ice
@@ -2918,55 +2925,71 @@ contains
     !! and low-latitude domains for adjustment (non. dim)
 
     real :: total_mass_in, total_mass_out, area_sum
-    real :: fw_diff, fw_scaling
+    real :: fw_diff, fw_scaling, area_pt
     logical :: debug=.false.
 
     debug=.false.
     is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce
     net_in(:,:) = 0.0; net_out(:,:) = 0.0; cell_area(:,:) = 0.0; mask(:,:) = 0.0
-    ! calculate FW in (precip) and out (evap) in units of kg s-1
-    do j=js,je ; do k=0, ncat; do i=is,ie
-      net_in(i,j) = net_in(i,j) + (FIA%lprec_top(i,j,k)   + FIA%fprec_top(i,j,k))
-      net_out(i,j) = net_out(i,j)+ FIA%evap_top(i,j,k)
-      if (lat1>0. .and. G%geoLatT(i,j)>=lat1) then
-         mask(i,j)=1.0
-      else if (lat1<0. .and. .not.PRESENT(lat2)) then
-         if (G%geoLatT(i,j)<=lat1) mask(i,j)=1.0
-      else if (PRESENT(lat2)) then
-         if (lat1>lat2) call SIS_error(FATAL,'lat1 must be less than lat2 in adjust_top_mass')
-         if (lat1<G%geoLatT(i,j) .and. G%geoLatT(i,j)<lat2) mask(i,j)=1.0
-      endif
+    I_avc = 1.0/real(FIA%avg_count)
+
+    ! calculate FW in (precip) and out (evap) in units of kg s-1 .
+    ! runoff and calving are passed directly to the ocean.
+    do j=js,je; do i=is,ie
+      net_in(i,j) = FIA%runoff(i,j) + FIA%calving(i,j)
+    enddo; enddo
+
+
+    do k=0, ncat; do j=js,je ; do i=is,ie
+      area_pt = IST%part_size(i,j,k)
+      net_in(i,j) = net_in(i,j) + (FIA%lprec_top(i,j,k)   + FIA%fprec_top(i,j,k) )*I_avc* area_pt
+      net_out(i,j) = net_out(i,j)+ FIA%evap_top(i,j,k)*I_avc* area_pt
     enddo; enddo; enddo
 
     do j=js,je ; do i=is,ie
+      if (lat1>0. .and. G%geoLatT(i,j)>lat1) then
+        mask(i,j)=1.0
+      else if (lat1<0. .and. .not.PRESENT(lat2)) then
+        if (G%geoLatT(i,j)<lat1) mask(i,j)=1.0
+      else if (PRESENT(lat2)) then
+        if (lat1>lat2) call SIS_error(FATAL,'lat1 must be less than lat2 in adjust_top_mass')
+        if (lat1<=G%geoLatT(i,j) .and. G%geoLatT(i,j)<=lat2) mask(i,j)=1.0
+      endif
       cell_area(i,j)=G%areaT(i,j)*G%mask2dT(i,j)*mask(i,j)
       net_in(i,j) = net_in(i,j)*cell_area(i,j)
       net_out(i,j) = net_out(i,j)*cell_area(i,j)
     enddo; enddo
 
     total_mass_in = reproducing_sum(net_in(:,:))   ! positive quantity
-    total_mass_out = reproducing_sum(net_out(:,:)) ! negative quantity
+    total_mass_out = reproducing_sum(net_out(:,:)) ! positive quantity
     area_sum = reproducing_sum(cell_area(:,:))
     fw_diff = pmt - (total_mass_in - total_mass_out) ! difference from constraint (kg s-1)
     fw_scaling = 1.0
+
     if ( total_mass_in > abs(fw_diff)) then ! only apply the scaling adjustment if
-       ! the total precipitation exceeds the required adjustment
+                                            ! the total precipitation exceeds the required adjustment
        fw_scaling =(total_mass_in+fw_diff)/total_mass_in
     endif
-   ! The adjustment is applied to liquid and frozen precipitation
+                                            ! The adjustment is applied to liquid and frozen precipitation
     do j=js,je ; do k=0,ncat; do i=is,ie
       if (mask(i,j).gt.0.0) then
          FIA%lprec_top(i,j,k) = FIA%lprec_top(i,j,k)*fw_scaling
          FIA%fprec_top(i,j,k) = FIA%fprec_top(i,j,k)*fw_scaling
       endif
     enddo; enddo; enddo
-    if (debug .and. is_root_pe()) then
-       print *,'pmt= ',pmt*1.e-9
-       print *,' fw_in= ',total_mass_in*1.e-9
-       print *,' fw_out= ',total_mass_out*1.e-9
-       print *,' fw_adj= ',fw_diff*1.e-9
-       print *,' fw_scaling= ',fw_scaling
-    endif
+    do j=js,je ; do i=is,ie
+      if (mask(i,j).gt.0.0) then
+         FIA%runoff(i,j) = FIA%runoff(i,j)*fw_scaling
+         FIA%calving(i,j) = FIA%calving(i,j)*fw_scaling
+      endif
+    enddo; enddo
+!    if (debug .and. is_root_pe()) then
+!       print *,'pmt= ',pmt*1.e-9
+!       print *,' fw_in= ',total_mass_in*1.e-9
+!       print *,' fw_out= ',total_mass_out*1.e-9
+!       print *,' fw_adj= ',fw_diff*1.e-9
+!       print *,' fw_scaling= ',fw_scaling
+!    endif
 
   end subroutine adjust_top_mass
 end subroutine constrain_surface_mass_balance
