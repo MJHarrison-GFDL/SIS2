@@ -182,9 +182,11 @@ subroutine update_ice_model_slow_dn ( Atmos_boundary, Land_boundary, Ice )
 
   call mpp_clock_begin(iceClock) ; call mpp_clock_begin(ice_clock_slow)
 
-  call ice_model_fast_cleanup(Ice)
-
   call unpack_land_ice_boundary(Ice, Land_boundary)
+
+  call convert_frost_to_snow(Ice%sCS%FIA, Ice%sCS%G, Ice%sCS%IG, Ice%discard_frost)
+
+  call ice_model_fast_cleanup(Ice)
 
   call exchange_fast_to_slow_ice(Ice)
 
@@ -260,7 +262,8 @@ subroutine update_ice_slow_thermo(Ice)
                             sG, sIG)
   endif
 
-  call convert_frost_to_snow(FIA, sG, sIG)
+
+! call convert_frost_to_snow(FIA, sG, sIG, Ice%discard_frost)
 
   if (Ice%sCS%do_icebergs) then
     if (Ice%sCS%berg_windstress_bug) then
@@ -301,6 +304,12 @@ subroutine update_ice_slow_thermo(Ice)
   ! Set up the thermodynamic fluxes in the externally visible structure Ice.
   call set_ocean_top_fluxes(Ice, sIST, Ice%sCS%IOF, FIA, Ice%sCS%OSS, &
                             sG, sIG, Ice%sCS)
+
+  if (Ice%sCS%debug) then
+    call Ice_public_type_chksum("After set_ocean_top_fluxes", Ice, check_slow=.true.)
+    call IOF_chksum("After set_ocean_top_fluxes", Ice%sCS%IOF, sG)
+    call IST_chksum("After set_ocean_top_fluxes", sIST, sG, sIG)
+  endif
 
   call mpp_clock_end(ice_clock_slow) ; call mpp_clock_end(iceClock)
 
@@ -442,6 +451,7 @@ subroutine unpack_land_ice_boundary(Ice, LIB)
   endif
 
 end subroutine unpack_land_ice_boundary
+
 
 !> This subroutine copies information (mostly fluxes and the updated temperatures)
 !! from the fast part of the sea-ice to the  slow part of the sea ice.
@@ -651,6 +661,15 @@ subroutine set_ocean_top_fluxes(Ice, IST, IOF, FIA, OSS, G, IG, sCS)
     enddo ; enddo
   endif
 
+!   if (allocated(FIA%runoff_adj) .and. allocated(FIA%calving_adj)) then
+!      do j=jsc,jec; do i=isc,iec
+!        i2 = i+i_off; j2 = j+j_off
+! !       Ice%runoff(i2,j2)=-999.
+! !       Ice%calving(i2,j2)=-999.
+!        Ice%runoff(i2,j2) = Ice%runoff(i2,j2) - FIA%runoff_adj(i,j)
+!        Ice%calving(i2,j2) = Ice%calving(i2,j2) - FIA%calving_adj(i,j)
+!      enddo; enddo
+!   endif
   ! This copy may need to be skipped in the first step of a cold-start run with lagged ice
   ! coupling, but otherwise if it is skipped may indicate a problem that should be trapped.
   if (coupler_type_initialized(IOF%tr_flux_ocn_top)) &
@@ -2044,6 +2063,11 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
          default=0., units="Sv")
      endif
   endif
+  call get_param(param_file, mdl, "DISCARD_FROST", Ice%discard_frost, &
+                 "If false, desumblimation of atmospheric moisture in  \n"//&
+                 "contact with relatively cold ocean surface temperatures is \n"//&
+                 "added to fprec. Otherwise, if true, frost is discarded.", default=.false.)
+
 
   nCat_dflt = 5 ; if (slab_ice) nCat_dflt = 1
   opm_dflt = 0.0 ; if (redo_fast_update) opm_dflt = 1.0e-40
@@ -2878,7 +2902,7 @@ subroutine constrain_surface_mass_balance(Ice)
 
 
   IG => Ice%fCS%IG
-  G => Ice%sCS%G
+  G => Ice%fCS%G
   FIA => Ice%fCS%FIA
   IST => Ice%fCS%IST
 
@@ -2902,7 +2926,7 @@ subroutine constrain_surface_mass_balance(Ice)
 
 contains
 
-  subroutine adjust_top_mass(FIA, IST, G, IG, pmt,lat1, lat2)
+  subroutine adjust_top_mass(FIA, IST, G, IG, pmt,lat1, lat2,debug)
     type(fast_ice_avg_type), intent(inout) :: FIA
     type(ice_state_type), intent(in) :: IST
     type(SIS_hor_grid_type), intent(in) :: G
@@ -2912,11 +2936,13 @@ contains
                                                !! or the southern latitude for low-latitude region
                                                !! if lat2 is present
     real, optional, intent(in)         :: lat2 !< the northern latitude boundary
-
+    logical, intent(in), optional      :: debug
 
     integer :: i,j,k,is,ie,js,je,ncat
     real    :: I_avc
     real, dimension(SZI_(G),SZJ_(G))   :: net_in !< rate of incoming mass at the top of the sea-ice
+                                               !! in units of kg m-2 s-1
+    real, dimension(SZI_(G),SZJ_(G))   :: net_in_land !< rate of incoming mass from land
                                                !! in units of kg m-2 s-1
     real, dimension(SZI_(G),SZJ_(G))   :: net_out !< rate of incoming mass at the top of the sea-ice
     !! in units of kg m-2 s-1
@@ -2925,18 +2951,21 @@ contains
     !! and low-latitude domains for adjustment (non. dim)
 
     real :: total_mass_in, total_mass_out, area_sum
-    real :: fw_diff, fw_scaling, area_pt
-    logical :: debug=.false.
+    real :: fw_def, fw_scaling, area_pt, total_mass_in_land
+    logical :: debug_ = .false.
 
-    debug=.false.
+    if (present(debug)) debug_=debug
+
     is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce
     net_in(:,:) = 0.0; net_out(:,:) = 0.0; cell_area(:,:) = 0.0; mask(:,:) = 0.0
+    net_in_land(:,:) = 0.0
     I_avc = 1.0/real(FIA%avg_count)
 
     ! calculate FW in (precip) and out (evap) in units of kg s-1 .
     ! runoff and calving are passed directly to the ocean.
     do j=js,je; do i=is,ie
-      net_in(i,j) = FIA%runoff(i,j) + FIA%calving(i,j)
+      net_in_land(i,j) = (FIA%runoff(i,j) + FIA%calving(i,j))
+      net_in(i,j) = net_in_land(i,j)
     enddo; enddo
 
 
@@ -2957,40 +2986,57 @@ contains
       endif
       cell_area(i,j)=G%areaT(i,j)*G%mask2dT(i,j)*mask(i,j)
       net_in(i,j) = net_in(i,j)*cell_area(i,j)
+      net_in_land(i,j) = net_in_land(i,j)*cell_area(i,j)
       net_out(i,j) = net_out(i,j)*cell_area(i,j)
     enddo; enddo
 
     total_mass_in = reproducing_sum(net_in(:,:))   ! positive quantity
+    total_mass_in_land = reproducing_sum(net_in_land(:,:))   ! positive quantity
     total_mass_out = reproducing_sum(net_out(:,:)) ! positive quantity
-    area_sum = reproducing_sum(cell_area(:,:))
-    fw_diff = pmt - (total_mass_in - total_mass_out) ! difference from constraint (kg s-1)
+!    area_sum = reproducing_sum(cell_area(:,:))
+    fw_def = pmt - (total_mass_in - total_mass_out) ! difference from constraint (kg s-1)
     fw_scaling = 1.0
 
-    if ( total_mass_in > abs(fw_diff)) then ! only apply the scaling adjustment if
+    if ( abs(total_mass_in-total_mass_in_land) > abs(fw_def)) then ! only apply the scaling adjustment if
                                             ! the total precipitation exceeds the required adjustment
-       fw_scaling =(total_mass_in+fw_diff)/total_mass_in
+                                            ! mjh: only applying the adjustment to ocean precipition
+                                            ! this may be modified in the future to include the land
+
+       fw_scaling = 1.0 + fw_def/(total_mass_in-total_mass_in_land)
+!       fw_scaling =(total_mass_in-total_mass_in_land+fw_def)/(total_mass_in-total_mass_in_land)
+    else
+       if (fw_def > 0.) then
+          fw_scaling = 2.0
+       else
+          fw_scaling = 0.0
+       endif
     endif
                                             ! The adjustment is applied to liquid and frozen precipitation
-    do j=js,je ; do k=0,ncat; do i=is,ie
+    do k=0,ncat; do j=js,je; do i=is,ie
       if (mask(i,j).gt.0.0) then
          FIA%lprec_top(i,j,k) = FIA%lprec_top(i,j,k)*fw_scaling
          FIA%fprec_top(i,j,k) = FIA%fprec_top(i,j,k)*fw_scaling
       endif
     enddo; enddo; enddo
-    do j=js,je ; do i=is,ie
-      if (mask(i,j).gt.0.0) then
-         FIA%runoff(i,j) = FIA%runoff(i,j)*fw_scaling
-         FIA%calving(i,j) = FIA%calving(i,j)*fw_scaling
-      endif
-    enddo; enddo
-!    if (debug .and. is_root_pe()) then
-!       print *,'pmt= ',pmt*1.e-9
-!       print *,' fw_in= ',total_mass_in*1.e-9
-!       print *,' fw_out= ',total_mass_out*1.e-9
-!       print *,' fw_adj= ',fw_diff*1.e-9
-!       print *,' fw_scaling= ',fw_scaling
-!    endif
-
+!    do j=js,je; do i=is,ie
+!      if (mask(i,j).gt.0.0) then
+!         FIA%runoff(i,j) = FIA%runoff(i,j)*fw_scaling
+!         FIA%runoff_adj(i,j) = FIA%runoff(i,j)*(1.0-fw_scaling)
+!         FIA%runoff_hflx(i,j) = FIA%runoff_hflx(i,j)*fw_scaling
+!         FIA%calving(i,j) = FIA%calving(i,j)*fw_scaling
+!         FIA%calving_adj(i,j) = FIA%calving(i,j)*(1.0-fw_scaling)
+!         FIA%calving_preberg(i,j) = FIA%calving_preberg(i,j)*fw_scaling
+!      endif
+!    enddo; enddo
+    if (debug_ .and. is_root_pe()) then
+       print *,'pmt= ',pmt*1.e-9
+       print *,' fw_in= ',total_mass_in*1.e-9
+       print *,' fw_in_land= ',total_mass_in_land*1.e-9
+       print *,' fw_out= ',total_mass_out*1.e-9
+       print *,' fw_adj= ',fw_def*1.e-9
+       print *,' fw_scaling= ',fw_scaling
+       print *,' net= ',(total_mass_in-total_mass_in_land)*fw_scaling + total_mass_in_land - total_mass_out
+    endif
   end subroutine adjust_top_mass
 end subroutine constrain_surface_mass_balance
 
