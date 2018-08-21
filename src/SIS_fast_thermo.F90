@@ -1236,18 +1236,29 @@ end subroutine flux_redo_chksum
 
 
 !> Convert negative evaporation over ice (i.e. frost formation) into snow.
-subroutine convert_frost_to_snow(FIA, G, IG)
+subroutine convert_frost_to_snow(FIA, G, IG, discard)
   type(fast_ice_avg_type),       intent(inout) :: FIA
   type(SIS_hor_grid_type),       intent(in)    :: G
   type(ice_grid_type),           intent(in)    :: IG
+  logical,  optional,            intent(in)    :: discard
 
   integer :: i, j, k, isc, iec, jsc, jec, ncat
+  logical discard_
+
+  discard_=.false.
+  if (PRESENT(discard)) discard_=discard
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
 
-  do j=jsc,jec ; do k=1,ncat ; do i=isc,iec ; if (FIA%evap_top(i,j,k) < 0.0) then
-    FIA%fprec_top(i,j,k) = FIA%fprec_top(i,j,k) - FIA%evap_top(i,j,k)
-    FIA%evap_top(i,j,k) = 0.0
-  endif ; enddo ; enddo ; enddo
+  if (discard_) then
+     do j=jsc,jec ; do k=1,ncat ; do i=isc,iec ; if (FIA%evap_top(i,j,k) < 0.0) then
+       FIA%evap_top(i,j,k) = 0.0
+     endif ; enddo ; enddo ; enddo
+  else
+     do j=jsc,jec ; do k=1,ncat ; do i=isc,iec ; if (FIA%evap_top(i,j,k) < 0.0) then
+       FIA%fprec_top(i,j,k) = FIA%fprec_top(i,j,k) - FIA%evap_top(i,j,k)
+       FIA%evap_top(i,j,k) = 0.0
+     endif ; enddo ; enddo ; enddo
+  endif
 
 end subroutine convert_frost_to_snow
 
