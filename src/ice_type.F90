@@ -176,7 +176,9 @@ type ice_data_type !  ice_public_type
                           ! time interpolation to the current model time.
   integer :: id_pmt_south ! The handle for PMT_SOUTH_FILE used for reading and
                           ! time interpolation to the current model time.
-
+  logical :: discard_frost !< If false, desumblimation of atmospheric moisture in
+                           !! contact with relatively cold ocean surface temperatures is
+                           !! added to fprec. Otherwise, if true, frost is discarded.
 end type ice_data_type !  ice_public_type
 
 contains
