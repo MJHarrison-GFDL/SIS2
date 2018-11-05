@@ -32,6 +32,8 @@ use SIS_get_input, only : Get_SIS_input, directories
 use SIS_sum_output, only : SIS_sum_output_init,  write_ice_statistics
 use SIS_transcribe_grid, only : copy_dyngrid_to_SIS_horgrid, copy_SIS_horgrid_to_dyngrid
 
+use MOM_io,            only : slasher
+use MOM_coms,          only : reproducing_sum
 use MOM_domains,       only : MOM_domain_type
 use MOM_domains,       only : pass_var, pass_vector, AGRID, BGRID_NE, CGRID_NE
 use MOM_domains,       only : fill_symmetric_edges, MOM_domains_init, clone_MOM_domain
@@ -43,8 +45,8 @@ use MOM_file_parser, only : open_param_file, close_param_file
 use MOM_hor_index, only : hor_index_type, hor_index_init
 use MOM_obsolete_params, only : obsolete_logical
 use MOM_string_functions, only : uppercase
-use MOM_time_manager, only : time_type, time_type_to_real, real_to_time
-use MOM_time_manager, only : operator(+), operator(-)
+use MOM_time_manager, only : time_type, time_type_to_real, real_to_time_type
+use MOM_time_manager, only : set_date, set_time, operator(+), operator(-)
 use MOM_time_manager, only : operator(>), operator(*), operator(/), operator(/=)
 
 use coupler_types_mod, only : coupler_1d_bc_type, coupler_2d_bc_type, coupler_3d_bc_type
@@ -62,6 +64,9 @@ use astronomy_mod, only : astronomy_init, astronomy_end
 use astronomy_mod, only : universal_time, orbital_time, diurnal_solar, daily_mean_solar
 use ocean_albedo_mod, only : compute_ocean_albedo            ! ice sets ocean surface
 use ocean_rough_mod,  only : compute_ocean_roughness         ! properties over water
+
+use time_interp_external_mod, only : init_external_field, time_interp_external
+use time_interp_external_mod, only : time_interp_external_init
 
 use ice_type_mod, only : ice_data_type, dealloc_ice_arrays
 use ice_type_mod, only : ice_type_slow_reg_restarts, ice_type_fast_reg_restarts
@@ -164,9 +169,11 @@ subroutine update_ice_model_slow_dn ( Atmos_boundary, Land_boundary, Ice )
 
   call mpp_clock_begin(iceClock) ; call mpp_clock_begin(ice_clock_slow)
 
-  call ice_model_fast_cleanup(Ice)
-
   call unpack_land_ice_boundary(Ice, Land_boundary)
+
+  call convert_frost_to_snow(Ice%sCS%FIA, Ice%sCS%G, Ice%sCS%IG)
+
+  call ice_model_fast_cleanup(Ice)
 
   call exchange_fast_to_slow_ice(Ice)
 
@@ -242,7 +249,8 @@ subroutine update_ice_slow_thermo(Ice)
                             sG, sIG)
   endif
 
-  call convert_frost_to_snow(FIA, sG, sIG)
+
+! call convert_frost_to_snow(FIA, sG, sIG)
 
   if (Ice%sCS%do_icebergs) then
     if (Ice%sCS%berg_windstress_bug) then
@@ -358,6 +366,10 @@ subroutine ice_model_fast_cleanup(Ice)
 
   if (.not.associated(Ice%fCS)) call SIS_error(FATAL, &
       "The pointer to Ice%fCS must be associated in ice_model_fast_cleanup.")
+
+  ! If applying a surface mass balance constraint, then make the adjustments here
+
+  call constrain_surface_mass_balance(Ice)
 
   ! average fluxes from update_ice_model_fast
   call avg_top_quantities(Ice%fCS%FIA, Ice%fCS%Rad, Ice%fCS%IST, &
@@ -1791,6 +1803,8 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
 
   ! ### These are just here to keep the order of SIS_parameter_doc.
   logical :: column_check
+  character(len=200) :: inputdir
+
   real :: imb_tol
 
   if (associated(Ice%sCS)) then ; if (associated(Ice%sCS%IST)) then
@@ -1891,7 +1905,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                  "fields like albedos are updated.  Currently this is only \n"//&
                  "used to initialize albedos when there is no restart file.", &
                  units="s", default=time_type_to_real(Time_step_slow))
-  dt_Rad = real_to_time(dt_Rad_real)
+  dt_Rad = real_to_time_type(dt_Rad_real)
   call get_param(param_file, mdl, "ICE_KMELT", kmelt, &
                  "A constant giving the proportionality of the ocean/ice \n"//&
                  "base heat flux to the tempature difference, given by \n"//&
@@ -2024,6 +2038,58 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
      ((dirs%input_filename(1:1)=='n') .and. (LEN_TRIM(dirs%input_filename)==1))))
 
   nudge_sea_ice = .false. ; call read_param(param_file, "NUDGE_SEA_ICE", nudge_sea_ice)
+
+  call get_param(param_file, mdl, "CONSTRAIN_MOISTURE_TRANSPORT", Ice%constrain_pmt, &
+                 "If true, constrain the meridional moisture transport implied by by \n"// &
+                 "the surface mass fluxes within polar domaains bounded by \n"//&
+                 "PMT_LATITUDE_NORTH and PMT_LATITUDE_SOUTH.", default=.false.)
+  if (Ice%constrain_pmt) then
+     call get_param(param_file, mdl, "PMT_LATITUDE_NORTH", Ice%pmt_lat_north, &
+       "The northern polar region boundary used to apply the moisture transport constraint.", &
+       default=90., units="degrees")
+     call get_param(param_file, mdl, "PMT_LATITUDE_SOUTH", Ice%pmt_lat_south, &
+       "The southern polar region boundary used to apply the moisture transport constraint.", &
+       default=-90., units="degrees")
+     call get_param(param_file, mdl, "PMT_WINDOW", Ice%pmt_window, &
+       "The window size (number of coupled timesteps) for calculating the running mean \n"// &
+       "of integrated mass flux. Note that the time period for averaging is a function of the \n"//  &
+       "coupled timestep.", default=1, units="none")
+     allocate(Ice%pmt_north_hist(Ice%pmt_window))
+     allocate(Ice%pmt_south_hist(Ice%pmt_window))
+     Ice%pmt_north_hist(:)=0.0; Ice%pmt_south_hist(:)=0.0
+     call get_param(param_file, mdl, "READ_PMT", Ice%read_pmt, &
+       "If true, read time-varying moisture transports from a file.", &
+       default=.false.)
+     if ( Ice%read_pmt) then
+        Ice%pmt_north_file = 'pmt_north.nc'
+        call get_param(param_file, mdl, "PMT_NORTH_FILE", Ice%pmt_north_file, &
+        "A case-sensitive filename for reading the northern hemisphere \n"//&
+        "moisture transport constraint in Sv.",default=Ice%pmt_north_file)
+        Ice%pmt_south_file = 'pmt_south.nc'
+        call get_param(param_file, mdl, "PMT_SOUTH_FILE", Ice%pmt_south_file, &
+        "A case-sensitive filename for reading the southern hemisphere \n"//&
+        "moisture transport constraint in Sv.",default=Ice%pmt_south_file)
+        call get_param(param_file, mdl, "PMT_FILE_VARIABLE", Ice%pmt_file_variable, &
+        "A case-sensitive filename for the file variable containing \n"//&
+        "the moisture transport constraint.",default='poleward_moisture_transport')
+        call get_param(param_file, mdl, "INPUTDIR", inputdir, &
+         "The directory in which input files are found.", default=".")
+        inputdir = slasher(inputdir)
+        Ice%id_pmt_north = init_external_field(trim(inputdir)//Ice%pmt_north_file,&
+                                               Ice%pmt_file_variable)
+        Ice%id_pmt_south = init_external_field(trim(inputdir)//Ice%pmt_south_file,&
+                                               Ice%pmt_file_variable)
+     else
+        call get_param(param_file, mdl, "PMT_NORTH", Ice%pmt_north, &
+             "The moisture transport constraint at the northern latitude.", &
+         default=0., units="Sv")
+        call get_param(param_file, mdl, "PMT_SOUTH", Ice%pmt_south, &
+         "The moisture transport constraint at the southern latitude.", &
+         default=0., units="Sv")
+     endif
+
+  endif
+
   nCat_dflt = 5 ; if (slab_ice) nCat_dflt = 1
   opm_dflt = 0.0 ; if (redo_fast_update) opm_dflt = 1.0e-40
 #ifdef SYMMETRIC_MEMORY_
@@ -2862,6 +2928,223 @@ subroutine update_ice_atm_deposition_flux( Atmos_boundary, Ice )
   call accumulate_deposition_fluxes(Atmos_boundary, Ice%fCS%FIA, Ice%fCS%G, Ice%fCS%IG)
 
 end subroutine update_ice_atm_deposition_flux
+
+!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
+!> If applying a surface mass balance constraint, most commonly in force ice/ocean
+!! simulations, then do so here.
+subroutine constrain_surface_mass_balance(Ice)
+  type(ice_data_type),       intent(inout) :: Ice
+
+  type(fast_ice_avg_type), pointer :: FIA => NULL()
+  type(SIS_hor_grid_type), pointer :: G => NULL()
+  type(ice_grid_type),     pointer :: IG => NULL()
+  type(ice_state_type),     pointer :: IST => NULL()
+
+  type(time_type) :: Time_rm
+  real :: pr_in_n, pr_in_s, cwlen, pr_scaling
+  real :: dt_slow
+  integer :: i
+
+  if (.not.associated(Ice%fCS)) call SIS_error(FATAL, &
+      "The pointer to Ice%fCS must be associated in constrain_surface_mass_balance.")
+  if (.not.associated(Ice%fCS%G)) call SIS_error(FATAL, &
+      "The pointer to Ice%fCS%G must be associated in constrain_surface_mass_balance.")
+  if (.not.associated(Ice%fCS%IG)) call SIS_error(FATAL, &
+      "The pointer to Ice%fCS%IG must be associated in constrain_surface_mass_balance.")
+  if (.not.associated(Ice%fCS%FIA)) call SIS_error(FATAL, &
+      "The pointer to Ice%fCS%FIA must be associated in constrain_surface_mass_balance.")
+  if (.not.associated(Ice%fCS%IST)) call SIS_error(FATAL, &
+      "The pointer to Ice%fCS%IST must be associated in constrain_surface_mass_balance.")
+  if (.not.associated(Ice%sCS)) call SIS_error(FATAL, &
+      "The pointer to Ice%sCS must be associated in constrain_surface_mass_balance.")
+
+
+  IG => Ice%fCS%IG
+  G => Ice%fCS%G
+  FIA => Ice%fCS%FIA
+  IST => Ice%fCS%IST
+
+  dt_slow = time_type_to_real(Ice%sCS%Time_step_slow)
+
+  if (Ice%constrain_pmt) then
+    if (Ice%pmt_window > 0) then
+       cwlen=0
+       do i=1,Ice%pmt_window
+         if (Ice%pmt_north_hist(i)==0.) then
+           cwlen=i-1
+           exit
+         endif
+       enddo
+       Time_rm = (Ice%Time - Ice%sCS%Time_step_slow*int(cwlen/2))
+!       Time_rm = Ice%Time
+    else
+       Time_rm = Ice%Time
+    endif
+    if (Ice%read_pmt) then
+       ! read pmt constraint (kg s-1)
+       call time_interp_external(Ice%id_pmt_north,Time_rm,Ice%pmt_north)
+    endif
+    ! adjust northern hemisphere region mass balance
+    call adjust_top_mass(FIA, IST, G, IG, Ice%pmt_north,Ice%pmt_lat_north,&
+         pmt_hist=Ice%pmt_north_hist,net_in_result=pr_in_n)
+    if (Ice%read_pmt) then
+       ! read pmt constraint (kg s-1)
+       call time_interp_external(Ice%id_pmt_south,Time_rm,Ice%pmt_south)
+    endif
+    ! adjust southern hemisphere region mass balance
+    call adjust_top_mass(FIA, IST, G, IG, Ice%pmt_south,Ice%pmt_lat_south,&
+         pmt_hist=Ice%pmt_south_hist,net_in_result=pr_in_s)
+    ! after adjusting PmE at high latitudes to match the prescribed value, make a corresponding adjustment to the
+    ! lower latitudes
+    call adjust_top_mass(FIA, IST, G, IG, -1.0*(pr_in_n+pr_in_s),&
+         Ice%pmt_lat_south,lat2=Ice%pmt_lat_north)
+  endif
+
+contains
+
+  subroutine adjust_top_mass(FIA, IST,G, IG, pmt,lat1, lat2,pmt_hist,net_in_result,debug)
+    type(fast_ice_avg_type), intent(inout) :: FIA !< pointer to a fast_ice_avg_type.
+    type(ice_state_type), intent(in) :: IST       !< pointer to an ice_state_type
+    type(SIS_hor_grid_type), intent(in) :: G      !< pointer to a SIS_hor_grid_type
+    type(ice_grid_type),  intent(in)    :: IG     !< pointer to an ice_grid_type
+    real, intent(in)                    :: pmt    !< the moisture constraint for the region (kg s-1)
+    real, intent(in), optional                   :: lat1 !< either the polar domain boundary for the north (degrees)
+                                          !! or the southern boundary of the central domain if lat2 is present
+    real, optional, intent(in)         :: lat2    !< the northern boundary of the central domain (degrees)
+    real, dimension(:), intent(inout), optional  :: pmt_hist  !< the history of pmt for the domain (kg s-1)
+    real, intent(out),optional                  :: net_in_result !< the realized net mass  flux into the domain (kg s-1)
+    logical, intent(in), optional      :: debug
+
+    integer :: i,j,k,is,ie,js,je,ncat
+    real    :: I_avc
+    real, dimension(SZI_(G),SZJ_(G))   :: net_in !< rate of incoming mass at the top of the sea-ice
+                                                 !! in units of kg m-2 s-1
+    real, dimension(SZI_(G),SZJ_(G))   :: net_in_land !< rate of incoming mass from land
+                                                      !! in units of kg m-2 s-1
+    real, dimension(SZI_(G),SZJ_(G))   :: net_out !< rate of incoming mass at the top of the sea-ice
+                                                  !! in units of kg m-2 s-1
+    real, dimension(SZI_(G),SZJ_(G))   :: cell_area !< temporary array for masked cell area
+    real, dimension(SZI_(G),SZJ_(G))   :: mask   !< A mask for dividing the surface into high-latitude
+                                                 !! and low-latitude domains for adjustment (non. dim)
+
+    real :: total_mass_in, total_mass_out, area_sum
+    real :: fw_dif, area_pt, total_mass_in_land, fw_scaling, pmt_avg
+    real :: total_mass_in_ocn, net_mass_ocn
+    logical :: debug_ = .false.
+
+
+    if (present(debug)) debug_=debug
+
+    is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce
+    net_in(:,:) = 0.0; net_out(:,:) = 0.0; cell_area(:,:) = 0.0
+    net_in_land(:,:) = 0.0
+
+    I_avc=1.0
+    if (FIA%avg_count>0) I_avc = 1.0/real(FIA%avg_count)
+
+    if (PRESENT(lat1)) then
+    do j=js,je ; do i=is,ie
+      mask(i,j)=0.0
+      if (.not. PRESENT(lat2)) then
+        if (lat1>0. .and. G%geoLatT(i,j)>lat1) then
+          mask(i,j)=1.0
+        else if (lat1<0. .and. G%geolatT(i,j)<lat1) then
+          mask(i,j)=1.0
+        endif
+      else
+        if (lat1>lat2) call SIS_error(FATAL,'lat1 must be less than lat2 in adjust_top_mass')
+        if (lat1<=G%geoLatT(i,j) .and. G%geoLatT(i,j)<=lat2) mask(i,j)=1.0
+      endif
+    enddo; enddo
+
+    endif
+
+    ! calculate FW in (precip) and out (evap) in units of kg s-1 .
+    ! runoff and calving are passed directly to the ocean.
+    do j=js,je; do i=is,ie
+      net_in_land(i,j) = (FIA%runoff(i,j) + FIA%calving(i,j))
+      net_in(i,j) = net_in_land(i,j)
+    enddo; enddo
+
+
+    do k=0, ncat; do j=js,je ; do i=is,ie
+      area_pt = IST%part_size(i,j,k)
+      net_in(i,j) = net_in(i,j) + (FIA%lprec_top(i,j,k)   + FIA%fprec_top(i,j,k) ) * I_avc * area_pt
+      net_out(i,j) = net_out(i,j)+ FIA%evap_top(i,j,k)* I_avc * area_pt
+    enddo; enddo; enddo
+
+    do j=js,je ; do i=is,ie
+      cell_area(i,j)=G%areaT(i,j)*G%mask2dT(i,j)*mask(i,j)
+      net_in(i,j) = net_in(i,j)*cell_area(i,j)
+      net_in_land(i,j) = net_in_land(i,j)*cell_area(i,j)
+      net_out(i,j) = net_out(i,j)*cell_area(i,j)
+    enddo; enddo
+
+    total_mass_in = reproducing_sum(net_in(:,:))   ! positive quantity
+    total_mass_in_land = reproducing_sum(net_in_land(:,:))   ! positive quantity
+    total_mass_out = reproducing_sum(net_out(:,:)) ! positive quantity
+    total_mass_in_ocn = total_mass_in - total_mass_in_land
+    net_mass_ocn = total_mass_in - total_mass_out
+
+! update running mean
+    if (present(pmt_hist)) then
+      cwlen=size(pmt_hist)
+      do i=1,size(pmt_hist)
+         if (pmt_hist(i)==0.) then
+           cwlen=i-1
+           exit
+         endif
+      enddo
+      if (cwlen<size(pmt_hist)) then
+        pmt_hist(cwlen+1)=net_mass_ocn
+        pmt_avg = sum(pmt_hist)/(cwlen+1)
+      else
+        pmt_hist=cshift(pmt_hist,1)
+        pmt_hist(cwlen)=net_mass_ocn
+        pmt_avg=sum(pmt_hist)/cwlen
+      endif
+      fw_dif = pmt - pmt_avg ! difference from constraint (kg s-1)
+    else
+      fw_dif = pmt - net_mass_ocn
+    endif
+
+
+
+    fw_scaling = 1.0
+
+    if ( abs(total_mass_in_ocn) > abs(fw_dif)) then ! only apply the scaling adjustment if
+                                                    ! the total precipitation exceeds the required adjustment
+
+       fw_scaling = 1.0 + fw_dif/(total_mass_in_ocn)
+    else
+       if (fw_dif > 0.) then
+          fw_scaling = 2.0
+       else
+          fw_scaling = 0.5
+       endif
+    endif
+
+    do k=0,ncat; do j=js,je; do i=is,ie
+      if (mask(i,j).gt.0.0) then
+         FIA%lprec_top(i,j,k) = FIA%lprec_top(i,j,k)*fw_scaling
+         FIA%fprec_top(i,j,k) = FIA%fprec_top(i,j,k)*fw_scaling
+      endif
+    enddo; enddo; enddo
+
+    if (present(net_in_result)) &
+    net_in_result = (total_mass_in_ocn)*fw_scaling + total_mass_in_land - total_mass_out
+
+    ! if (debug_ .and. is_root_pe()) then
+    !    print *,'pmt= ',pmt*1.e-9
+    !    print *,' fw_in= ',total_mass_in*1.e-9
+    !    print *,' fw_in_land= ',total_mass_in_land*1.e-9
+    !    print *,' fw_out= ',total_mass_out*1.e-9
+    !    print *,' fw_adj= ',fw_dif*1.e-9
+    !    print *,' fw_scaling= ',fw_scaling
+    !    if (present(net_in_result)) print *,' net= ',net_in_result
+    ! endif
+  end subroutine adjust_top_mass
+end subroutine constrain_surface_mass_balance
 
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
