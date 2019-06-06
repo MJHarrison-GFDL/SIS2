@@ -26,7 +26,7 @@ use SIS_diag_mediator, only : query_SIS_averaging_enabled, SIS_diag_ctrl
 use SIS_diag_mediator, only : register_diag_field=>register_SIS_diag_field
 use SIS_sum_output, only : SIS_sum_out_CS, write_ice_statistics! , SIS_sum_output_init
 use SIS_sum_output, only : accumulate_bottom_input, accumulate_input_1, accumulate_input_2
-
+use MOM_coms,          only : reproducing_sum
 ! use MOM_domains,       only : pass_var
 ! ! use MOM_dyn_horgrid, only : dyn_horgrid_type, create_dyn_horgrid, destroy_dyn_horgrid
 use MOM_error_handler, only : SIS_error=>MOM_error, FATAL, WARNING, SIS_mesg=>MOM_mesg
@@ -110,7 +110,7 @@ type slow_thermo_CS ; private
   real    :: max_ice_limit  !< The maximum sea ice thickness, in m, when do_ice_limit is true.
 
   logical :: nudge_sea_ice = .false. !< If true, nudge sea ice concentrations towards observations.
-  real    :: nudge_sea_ice_rate = 0.0 !< The rate of cooling of ice-free water that should be ice
+  real, dimension(2)    :: nudge_sea_ice_rate = 0.0 !< The rate of cooling of ice-free water that should be ice
                             !! covered in order to constrained the ice concentration to track
                             !! observations.  A suggested value is of order 10000 W m-2.
   real    :: nudge_stab_fac !< A factor that determines whether the buoyancy flux associated with
@@ -586,6 +586,14 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, IG)
     net_melt              ! The net mass flux from the ice and snow into the
                           ! ocean due to melting and freezing integrated
                           ! across all categories, in kg m-2 s-1.
+  real, dimension(SZI_(G),SZJ_(G))   :: &
+    melt_nudge_mass,&       ! The mass flux over a cell surface due to sea ice nudging (kg s-1)
+    pr_in              ! Precipition mass flux (kg s-1)
+!  real, dimension(2) :: Melt_nudge_NS, extent_NS ! arrays for storing global sums of melt_nudge_mass and extent_ice
+                                                 ! respectively
+!  real, dimension(2) :: Melt_nudge_ga  ! hemispheric melt nudging (kg m-2 s-1)
+  real :: melt_sum, pr_sum, pr_scaling, cell_area !, extent_sum ! global sums
+!  real :: hem ! hemisphere (1=N,2=S)
   real, dimension(SZI_(G),SZJ_(G),1:IG%CatIce)   :: heat_in, enth_prev, enth
   real, dimension(SZI_(G),SZJ_(G))   :: heat_in_col, enth_prev_col, enth_col, enth_mass_in_col
 
@@ -656,6 +664,9 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, IG)
   real, parameter :: T_0degC = 273.15 ! 0 degrees C in Kelvin
 
   real :: tot_heat_in, enth_here, enth_imb, norm_enth_imb, emic2, tot_heat_in2, enth_imb2
+  integer :: isd, ied, jsd, jed
+
+  isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   NkIce = IG%NkIce ; I_Nk = 1.0 / NkIce ; kg_H_Nk = IG%H_to_kg_m2 * I_Nk
@@ -679,7 +690,7 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, IG)
   ! state, potentially including freshwater fluxes to avoid driving oceanic
   ! convection.
   if (CS%nudge_sea_ice) then
-    if (.not.allocated(IOF%melt_nudge)) allocate(IOF%melt_nudge(isc:iec,jsc:jec))
+    if (.not.allocated(IOF%melt_nudge)) allocate(IOF%melt_nudge(isd:ied,jsd:jed))
 
     cool_nudge(:,:) = 0.0 ; IOF%melt_nudge(:,:) = 0.0
     icec(:,:) = 0.0
@@ -692,7 +703,7 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, IG)
     call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water, EOS=EOS)
     do j=jsc,jec ; do i=isc,iec
       if (icec(i,j) < icec_obs(i,j) - CS%nudge_conc_tol) then
-        cool_nudge(i,j) = CS%nudge_sea_ice_rate * &
+        cool_nudge(i,j) = CS%nudge_sea_ice_rate(1) * &
              ((icec_obs(i,j)-CS%nudge_conc_tol) - icec(i,j))**2.0 ! W/m2
         if (CS%nudge_stab_fac /= 0.0) then
           if (OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
@@ -704,7 +715,7 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, IG)
         endif
       elseif (icec(i,j) > icec_obs(i,j) + CS%nudge_conc_tol) then
         ! Heat the ice but do not apply a fresh water flux.
-        cool_nudge(i,j) = -CS%nudge_sea_ice_rate * &
+        cool_nudge(i,j) = -CS%nudge_sea_ice_rate(2) * &
              (icec(i,j) - (icec_obs(i,j)+CS%nudge_conc_tol))**2.0 ! W/m2
       endif
 
@@ -714,6 +725,24 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, IG)
         OSS%bheat(i,j) = OSS%bheat(i,j) - cool_nudge(i,j)
       endif
     enddo ; enddo
+
+!    Extract meltwater used to build ice from the hemispheric
+!    ice-free region
+
+!    sum the sea-ice melt flux globally
+!    melt_nudge_mass(:,:)=0.0;pr_in(:,:)=0.0
+!    do j=jsc,jec; do i=isc,iec
+!      cell_area = G%mask2dT(i,j)*G%areaT(i,j)
+!      melt_nudge_mass(i,j) = IOF%melt_nudge(i,j)*cell_area
+!      pr_in(i,j) = IOF%lprec_ocn_top(i,j)*cell_area
+!    enddo; enddo
+!    melt_sum = reproducing_sum(melt_nudge_mass)
+!    pr_sum = reproducing_sum(pr_in)
+!    pr_scaling = 1.0 - melt_sum/pr_sum
+!    do j=jsc,jec; do i=isc,iec
+!      IOF%lprec_ocn_top(i,j) = IOF%lprec_ocn_top(i,j)*pr_scaling
+!    enddo; enddo
+
   endif
   if (CS%do_ice_restore) then
     ! get observed ice thickness for ice restoring, if calculating qflux
