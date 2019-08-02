@@ -7,7 +7,8 @@ use mpp_mod, only: input_nml_file
 use mpp_domains_mod, only : domain2d
 
 use time_manager_mod, only: time_type, get_date, set_date
-use data_override_mod, only : data_override, data_override_init, data_override_unset_domains
+use data_override_mod, only : data_override, data_override_init, data_override_unset_domains, &
+                              data_override_initialized
 
 implicit none ;  private
 
@@ -83,8 +84,12 @@ subroutine get_sea_surface(Time, ts, cn, iceh, ice_domain, ice_domain_end, ts_in
   endif
 
   if (present(ice_domain)) then
-    call data_override_unset_domains(unset_Ice=.true., must_be_set=.false.)
-    call data_override_init(Ice_domain_in = Ice_domain)
+    if (.not. data_override_initialized()) then
+       call data_override_init(Ice_domain_in = Ice_domain)
+    else
+       call data_override_unset_domains(unset_Ice=.true., must_be_set=.false.)
+       call data_override_init(Ice_domain_in = Ice_domain)
+    endif
   endif
 
   ts_in_degK = .true. ; if (present(ts_in_K)) ts_in_degK = ts_in_K
