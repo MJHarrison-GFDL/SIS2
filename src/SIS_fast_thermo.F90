@@ -46,7 +46,7 @@ use SIS_hor_grid, only : SIS_hor_grid_type
 use ice_grid, only : ice_grid_type
 
 use SIS2_ice_thm,  only : SIS2_ice_thm_CS, SIS2_ice_thm_init, SIS2_ice_thm_end
-use SIS2_ice_thm,  only : ice_temp_SIS2, latent_sublimation
+use SIS2_ice_thm,  only : ice_temp_SIS2, ice_temp_mushy, latent_sublimation
 use SIS2_ice_thm,  only : get_SIS2_thermo_coefs, enth_from_TS, Temp_from_En_S
 
 implicit none ; private
@@ -60,32 +60,33 @@ public :: redo_update_ice_model_fast, find_excess_fluxes
 type fast_thermo_CS ; private
   ! These two arrarys are used with column_check when evaluating the enthalpy
   ! conservation with the fast thermodynamics code.
-  real, pointer, dimension(:,:,:) :: enth_prev => NULL() !< The previous enthalpy [J m-2], used with
-                                     !! column_check when evaluating the enthalpy conservation
-                                     !! with the fast thermodynamics code
-  real, pointer, dimension(:,:,:) :: heat_in => NULL() !< The heat input [J m-2],  used with
-                                     !! column_check when evaluating the enthalpy conservation
-                                     !! with the fast thermodynamics code
+  real, pointer, dimension(:,:,:) :: &
+    enth_prev, heat_in
 
-  logical :: debug_fast   !< If true, write verbose checksums of code that is
-                          !! executed on fast ice PEs for debugging purposes.
-  logical :: debug_slow   !< If true, write verbose checksums of code that is
-                          !! executed on slow ice PEs for debugging purposes.
-  logical :: column_check !< If true, enable the heat check column by column.
-  real    :: imb_tol      !< The tolerance for imbalances to be flagged by
-                          !! column_check [nondim].
-  logical :: bounds_check !< If true, check for sensible values of thicknesses
-                          !! temperatures, fluxes, etc.
+  logical :: debug_fast   ! If true, write verbose checksums of code that is
+                          ! executed on fast ice PEs for debugging purposes.
+  logical :: debug_slow   ! If true, write verbose checksums of code that is
+                          ! executed on slow ice PEs for debugging purposes.
+  logical :: column_check ! If true, enable the heat check column by column.
+  real    :: imb_tol      ! The tolerance for imbalances to be flagged by
+                          ! column_check, nondim.
+  logical :: bounds_check ! If true, check for sensible values of thicknesses
+                          ! temperatures, fluxes, etc.
 
-  integer :: n_fast = 0   !< The number of times update_ice_model_fast has been called.
-  logical :: Reorder_0C_heatflux !< If true, rearrange the calculation of the heat fluxes projected
-                          !! back to 0C to work on each contribution separately, so that they can
-                          !! be indentically replicated if there is a single fast timestep per
-                          !!  coupled timestep and REDO_FAST_ICE_UPDATE=True
-  integer :: max_tskin_itt !< The maximum number of iterations of the skin temperature and
-                          !! optical properties during redo_update_ice_model_fast.
+  integer :: n_fast = 0   ! The number of times update_ice_model_fast
+                          ! has been called.
+  logical :: Reorder_0C_heatflux ! If true, rearrange the calculation
+                          ! of the heat fluxes projected back to 0C to work
+                          ! on each contribution separately, so that they
+                          ! can be indentically replicated if there is
+                          ! a single fast timestep per coupled timestep and
+                          ! REDO_FAST_ICE_UPDATE=True
+  integer :: max_tskin_itt  ! The maximum number of iterations of the skin
+                          ! temperature and optical properties during
+                          ! redo_update_ice_model_fast.
+  logical :: do_mushy = .false. ! activate Icepack mushy layer thermo. - mw/new
 
-  !> A pointer to the control structures for subsidiary modules.
+  ! These are pointers to the control structures for subsidiary modules.
   type(SIS2_ice_thm_CS), pointer  :: ice_thm_CSp => NULL()
 end type fast_thermo_CS
 
@@ -767,15 +768,28 @@ subroutine do_update_ice_model_fast(Atmos_boundary, IST, sOSS, Rad, FIA, &
 
       !   This call updates the snow and ice temperatures and accumulates the
       ! surface and bottom melting/freezing energy.  The ice and snow do not
-      ! actually lose or gain any mass from freezing or melting.
-      ! mw/new - pass melt pond (surface temp fixed at freezing when present)
-      call ice_temp_SIS2(IST%mH_pond(i,j,k)*IG%H_to_kg_m2, &
-                         IST%mH_snow(i,j,k)*IG%H_to_kg_m2, &
-                         IST%mH_ice(i,j,k)*IG%H_to_kg_m2, &
-                         enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
-                         sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
-                         dt_fast, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
-                         CS%ice_thm_CSp, IST%ITV, CS%column_check)
+      ! actually lose or gain any mass from freezing or melting.  However, the
+      ! mushy option can make snow into ice through seawater flooding and drain
+      ! melt pond
+      if ( CS%do_mushy ) then
+        call ice_temp_mushy(IST%mH_pond(i,j,k), & ! note: ice_temp_mushy can change
+                           IST%mH_snow(i,j,k), &  ! masses; need fixed units to interact
+                           IST%mH_ice(i,j,k), &   ! with ice_temp_mushy
+                           enth_col, IST%sal_ice(i,j,k,:), hf_0, dhf_dt, SW_abs_col, &
+                           sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                           dt_fast, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
+                           FIA%h2o_ocn_to_ice(i,j,k), FIA%salt_ocn_to_ice(i,j,k),&
+                           FIA%heat_ice_to_ocn(i,j,k), CS%ice_thm_CSp, IST%ITV)
+                           ! need column check - mw
+      else
+        call ice_temp_SIS2(IST%mH_pond(i,j,k)*IG%H_to_kg_m2, &
+                           IST%mH_snow(i,j,k)*IG%H_to_kg_m2, &
+                           IST%mH_ice(i,j,k)*IG%H_to_kg_m2, &
+                           enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                           sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                           dt_fast, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
+                           CS%ice_thm_CSp, IST%ITV, CS%column_check)
+      endif
       IST%enth_snow(i,j,k,1) = enth_col(0)
       do m=1,NkIce ; IST%enth_ice(i,j,k,m) = enth_col(m) ; enddo
 
@@ -886,14 +900,16 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
   real :: hf_0    ! The positive upward surface heat flux when T_sfc = 0 degC [W m-2].
   real :: dhf_dt  ! The deriviative of the upward surface heat flux with Ts [W m-2 degC-1].
   real :: sw_tot  ! sum over dir/dif vis/nir components
-  real :: rho_ice       ! The nominal density of sea ice [kg m-3].
-  real :: rho_snow      ! The nominal density of snow [kg m-3].
+  real :: rho_ice       ! The nominal density of sea ice in kg m-3.
+  real :: rho_snow      ! The nominal density of snow in kg m-3.
+  real :: rho_water     ! The nominal density of water in kg m-3.
   real, dimension(size(FIA%flux_sw_top,4)) :: &
     albedos             ! The ice albedos by directional and wavelength band.
   real, dimension(IG%NkIce) :: &
     sw_abs_lay          ! The fractional shortwave absorption by each ice layer.
   real :: H_to_m_ice    ! The specific volumes of ice and snow times the
-  real :: H_to_m_snow   ! conversion factor from thickness units [m H-1 ~> m3].
+  real :: H_to_m_snow   ! conversion factor from thickness units, in m H-1.
+  real :: H_to_m_pond   ! conversion factor from thickness units, in m H-1.
   real :: snow_wt       ! A fractional weighting of snow in the category surface area.
   real, dimension(G%isd:G%ied,size(FIA%flux_sw_top,4)) :: &
     sw_tot_ice_band     !   The total shortwave radiation by band, integrated
@@ -940,8 +956,9 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
   endif
 
   call get_SIS2_thermo_coefs(IST%ITV, ice_salinity=S_col, enthalpy_units=enth_units, &
-                             rho_ice=rho_ice, rho_snow=rho_snow)
+                             rho_ice=rho_ice, rho_snow=rho_snow, rho_water=rho_water)
   H_to_m_snow = IG%H_to_kg_m2 / Rho_snow ; H_to_m_ice = IG%H_to_kg_m2 / Rho_ice
+  H_to_m_pond = IG%H_to_kg_m2 / Rho_water
 
   !
   ! implicit update of ice surface temperature
@@ -1009,7 +1026,7 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
     ! can depend on the surface skin temperature, which is not yet well known,
     ! there may be some iteration for self-consistency.
     do k=1,ncat ; do i=isc,iec ; if (do_optics(i,j) .and. IST%part_size(i,j,k) > 0.0) then
-      call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k)*H_to_m_snow, &
+      call ice_optics_SIS2(IST%mH_pond(i,j,k)*H_to_m_pond, IST%mH_snow(i,j,k)*H_to_m_snow, &
                IST%mH_ice(i,j,k)*H_to_m_ice, Rad%Tskin_Rad(i,j,k), sOSS%T_fr_ocn(i,j), IG%NkIce, &
                albedos, Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
                sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
@@ -1051,6 +1068,8 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
           tmelt_tmp = 0.0 ; bmelt_tmp = 0.0 ; Tskin_prev = Tskin
           !   This call only estimates an updated skin temperature for
           ! calculating the ice optical properties.
+          !
+          ! Is this problematic for ice_temp_mushy which changes mass? - mw
           call ice_temp_SIS2(IST%mH_pond(i,j,k)*IG%H_to_kg_m2, &
                    IST%mH_snow(i,j,k)*IG%H_to_kg_m2, IST%mH_ice(i,j,k)*IG%H_to_kg_m2, &
                    enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
@@ -1061,8 +1080,9 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
 !         Tskin_itt(itt) = Tskin
 !         SW_tot_itt(itt) = SW_tot
 
-          call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k)*H_to_m_snow, &
-                  IST%mH_ice(i,j,k)*H_to_m_ice, Tskin, sOSS%T_fr_ocn(i,j), IG%NkIce, &
+          call ice_optics_SIS2(IST%mH_pond(i,j,k)*H_to_m_pond, &
+                  IST%mH_snow(i,j,k)*H_to_m_snow, IST%mH_ice(i,j,k)*H_to_m_ice, &
+                  Tskin, sOSS%T_fr_ocn(i,j), IG%NkIce, &
                   albedos, Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
                   sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
                   optics_CSp, IST%ITV, coszen_in=Rad%coszen_lastrad(i,j))
@@ -1146,6 +1166,9 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
     do k=1,ncat ; do i=isc,iec ; if (IST%part_size(i,j,k) > 0.0) then
       enth_col(0) = IST%enth_snow(i,j,k,1)
       do m=1,NkIce ; enth_col(m) = IST%enth_ice(i,j,k,m) ; enddo
+      if ( CS%do_mushy ) then
+        do m=1,NkIce ; S_col(m) = IST%sal_ice(i,j,k,m) ; enddo
+      endif
 
       ! This is for sublimation into water vapor at 0 degC; if the vapor should be
       ! at a different temperature, a correction would be made here.
@@ -1164,17 +1187,31 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
 
       !   This call updates the snow and ice temperatures and accumulates the
       ! surface and bottom melting/freezing energy.  The ice and snow do not
-      ! actually lose or gain any mass from freezing or melting.
-      ! mw/new - pass melt pond (surface temp fixed at freezing when present)
-      call ice_temp_SIS2(IST%mH_pond(i,j,k)*IG%H_to_kg_m2, &
-                         IST%mH_snow(i,j,k)*IG%H_to_kg_m2, &
-                         IST%mH_ice(i,j,k)*IG%H_to_kg_m2, &
-                         enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
-                         sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
-                         dt_here, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
-                         CS%ice_thm_CSp, IST%ITV, CS%column_check)
+      ! actually lose or gain any mass from freezing or melting.  However, the
+      ! mushy option can make snow into ice through seawater flooding and drain
+      ! melt pond.
+      if ( CS%do_mushy ) then
+        call ice_temp_mushy(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), &
+                           IST%mH_ice(i,j,k), enth_col, S_col, &
+                           hf_0, dhf_dt, SW_abs_col, sOSS%T_fr_ocn(i,j), &
+                           sOSS%bheat(i,j), Tskin, dt_here, NkIce, FIA%tmelt(i,j,k), &
+                           FIA%bmelt(i,j,k),  FIA%h2o_ocn_to_ice(i,j,k), &
+                           FIA%salt_ocn_to_ice(i,j,k), FIA%heat_ice_to_ocn(i,j,k),&
+                           CS%ice_thm_CSp, IST%ITV ) ! no column check yet - mw
+      else
+        call ice_temp_SIS2(IST%mH_pond(i,j,k)*IG%H_to_kg_m2, &
+                           IST%mH_snow(i,j,k)*IG%H_to_kg_m2, &
+                           IST%mH_ice(i,j,k)*IG%H_to_kg_m2, &
+                           enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                           sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                           dt_here, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
+                           CS%ice_thm_CSp, IST%ITV, CS%column_check)
+      endif
       IST%enth_snow(i,j,k,1) = enth_col(0)
       do m=1,NkIce ; IST%enth_ice(i,j,k,m) = enth_col(m) ; enddo
+      if ( CS%do_mushy ) then
+        do m=1,NkIce ; IST%sal_ice(i,j,k,m) = S_col(m) ; enddo
+      endif
 
 !      Rad%t_skin(i,j,k) = Tskin
       FIA%flux_sh_top(i,j,k)  = FIA%flux_sh0(i,j,k)  + Tskin * FIA%dshdt(i,j,k)
@@ -1332,6 +1369,10 @@ subroutine SIS_fast_thermo_init(Time, G, IG, param_file, diag, CS)
   call get_param(param_file, mdl, "DEBUG_FAST_ICE", CS%debug_fast, &
                  "If true, write out verbose debugging data on the fast ice PEs.", &
                  default=debug, debuggingParam=.true.)
+
+  call get_param(param_file, mdl, "DO_MUSHY", CS%do_mushy, &
+                 "If true, do mushy layer thermodynamics (Icepack) \n",&
+                 default=.true.)
 
   call SIS2_ice_thm_init(param_file, CS%ice_thm_CSp)
 

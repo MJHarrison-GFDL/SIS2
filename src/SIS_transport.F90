@@ -106,29 +106,48 @@ end type cell_average_state_type
 contains
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
-!> ice_cat_transport does ice transport of mass and tracers by thickness category
-subroutine ice_cat_transport(CAS, TrReg, dt_slow, nsteps, G, US, IG, CS, uc, vc, mca_tot, uh_tot, vh_tot)
-  type(cell_average_state_type),     intent(inout) :: CAS !< A structure with ocean-cell averaged masses.
-  type(SIS_hor_grid_type),           intent(inout) :: G   !< The horizontal grid type
-  type(ice_grid_type),               intent(inout) :: IG  !< The sea-ice specific grid type
-  type(SIS_tracer_registry_type),    pointer       :: TrReg !< The registry of SIS ice and snow tracers.
-  real,                              intent(in)    :: dt_slow !< The amount of time over which the
-                                                          !! ice dynamics are to be advanced [T ~> s].
-  integer,                           intent(in)    :: nsteps  !< The number of advective iterations
-                                                          !! to use within this time step.
-  type(unit_scale_type),             intent(in)    :: US  !< A structure with unit conversion factors
-  type(SIS_transport_CS),            pointer       :: CS  !< A pointer to the control structure for this module
-  real, dimension(SZIB_(G),SZJ_(G)), optional, intent(in)    :: uc  !< The zonal ice velocity [L T-1 ~> m s-1].
-  real, dimension(SZI_(G),SZJB_(G)), optional, intent(in)    :: vc  !< The meridional ice velocity [L T-1 ~> m s-1].
-  real, dimension(SZI_(G),SZJ_(G),0:max(nsteps,1)), optional, intent(in) :: &
-    mca_tot    !< The total mass per unit total area of snow and ice summed across thickness
-               !! categories in a cell, after each substep [H ~> kg m-2].
-  real, dimension(SZIB_(G),SZJ_(G),max(nsteps,1)), optional, intent(in) :: &
-    uh_tot     !< Total zonal fluxes during each substep [H L2 T-1 ~> kg s-1].
-  real, dimension(SZI_(G),SZJB_(G),max(nsteps,1)), optional, intent(in) :: &
-    vh_tot     !< Total meridional fluxes during each substep [H L2 T-1 ~> kg s-1].
-
-  ! Local variables
+! transport - do ice transport and thickness class redistribution              !
+!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
+subroutine ice_transport(part_sz, mH_ice, mH_snow, mH_pond, uc, vc, TrReg, &
+                         dt_slow, G, IG, CS, rdg_hice, snow2ocn, enth2ocn, &
+                         water2ocn, rdg_rate, rdg_open, rdg_vosh)
+  type(SIS_hor_grid_type),                      intent(inout) :: G
+  type(ice_grid_type),                          intent(inout) :: IG
+  real, dimension(SZI_(G),SZJ_(G),0:SZCAT_(IG)), intent(inout) :: part_sz
+  real, dimension(SZI_(G),SZJ_(G),SZCAT_(IG)),  intent(inout) :: mH_ice, mH_snow, mH_pond
+  type(SIS_tracer_registry_type),               pointer       :: TrReg
+  real, dimension(SZIB_(G),SZJ_(G)),            intent(inout) :: uc
+  real, dimension(SZI_(G),SZJB_(G)),            intent(inout) :: vc
+  real,                                         intent(in)    :: dt_slow
+  type(SIS_transport_CS),                       pointer       :: CS
+  real, dimension(SZI_(G),SZJ_(G),SZCAT_(IG)),  intent(inout) :: rdg_hice
+  real, dimension(SZI_(G),SZJ_(G)),             intent(inout) :: snow2ocn ! snow volume [m] dumped into ocean during ridging
+  real, dimension(SZI_(G),SZJ_(G)),             intent(inout) :: enth2ocn ! snow enth. [J/m2] dumped into ocean during ridging
+  real, dimension(SZI_(G),SZJ_(G)),             intent(inout) :: water2ocn ! pond [kg/m2] dumped into ocean during ridging
+  real, dimension(SZI_(G),SZJ_(G)),             intent(inout) :: rdg_rate
+  real, dimension(SZI_(G),SZJ_(G)),             intent(inout) :: rdg_open ! formation rate of open water due to ridging
+  real, dimension(SZI_(G),SZJ_(G)),             intent(inout) :: rdg_vosh ! rate of ice volume shifted from level to ridged ice
+! Arguments: part_sz - The fractional ice concentration within a cell in each
+!                      thickness category, nondimensional, 0-1, in/out.
+!  (inout)   mH_ice - The mass per unit area of the ice in each category in H (often kg m-2).
+!  (inout)   mH_snow - The mass per unit area of the snow atop the ice in each
+!                     category in H (often kg m-2).
+!  (inout)   mH_pond - The mass per unit area of the pond on the ice in each category
+!  (in)      uc - The zonal ice velocity, in m s-1.
+!  (in)      vc - The meridional ice velocity, in m s-1.
+!  (inout)   TrReg - The registry of registered SIS ice and snow tracers.
+!  (in)      mH_lim - The lower ice-loading limit of each category, in H (often kg m-2).
+!  (in)      dt_slow - The amount of time over which the ice dynamics are to be
+!                      advanced, in s.
+!  (in)      G - The ocean's grid structure.
+!  (in)      IG - The sea-ice-specific grid structure.
+!  (in/out)  CS - A pointer to the control structure for this module.
+  real, dimension(:,:,:,:), pointer :: &
+    heat_ice=>NULL(), & ! Pointers to the enth_ice and enth_snow arrays from the
+    heat_snow=>NULL()   ! SIS tracer registry.  enth_ice is the enthalpy of the
+                        ! ice in each category and layer, while enth_snow is the
+                        ! enthalpy of the snow atop the ice in each category.
+                        ! Both are in enth_units (J or rescaled).
   real, dimension(SZIB_(G),SZJ_(G),SZCAT_(IG)) :: &
     uh_ice, &  ! Zonal fluxes of ice [H L2 T-1 ~> kg s-1].
     uh_snow, & ! Zonal fluxes of snow [H L2 T-1 ~> kg s-1].
@@ -258,11 +277,14 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, CS, rdg_rate)
   !  Convert the ocean-cell averaged properties back into the ice_state_type.
   call cell_ave_state_to_ice_state(CAS, G, US, IG, CS, IST, TrReg)
 
-  ! Compress the ice where the fractional coverage exceeds 1, starting with the
-  ! thinnest category, in what amounts to a minimalist version of a sea-ice
-  ! ridging scheme.  A more complete ridging scheme would also compress
-  ! thicker ice and allow the fractional ice coverage to drop below 1.
-  call compress_ice(IST%part_size, IST%mH_ice, IST%mH_snow, IST%mH_pond, TrReg, G, IG, CS, CAS)
+  if ( CS%do_ridging ) then
+    ! Ridge the ice (Icepack scheme);
+    call ice_ridging(part_sz, mca_ice, mca_snow, mca_pond, mH_ice, mH_snow, mH_pond, &
+                     TrReg, G, IG, dt_slow, uc, vc, snow2ocn, enth2ocn, water2ocn)
+  endif
+  ! Compress the ice, thin to thick, where the total cover > 1 (SIS scheme)
+  call compress_ice(part_sz, mca_ice, mca_snow, mca_pond, &
+                    mH_ice, mH_snow, mH_pond, TrReg, G, IG, CS)
 
   if (CS%bounds_check) call check_SIS_tracer_bounds(TrReg, G, IG, "After compress_ice")
 

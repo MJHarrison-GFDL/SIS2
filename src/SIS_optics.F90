@@ -38,10 +38,10 @@ type, public :: SIS_optics_CS ; private
                           ! transfer calculation for the shortwave radiation
                           ! within the sea-ice and snow.
 
-  logical :: do_pond = .false. !< activate melt pond scheme - mw/new
-  real :: max_pond_frac = 0.5  !< pond water beyond this is dumped [nondim]
-  real :: min_pond_frac = 0.2  !< ponds below sea level don't drain [nondim]
-
+  logical :: do_pond = .false. ! activate melt pond scheme - mw/new
+  real :: del_p = 0.8          ! pond depth to area ratio (m)
+  real :: r_sat = 0.15         ! ratio of liquid to liquid+snow water that can
+                               ! be held in snow without forming pond
   logical :: slab_optics = .false. !< If true use the very old slab ice optics
                                    !! from the supersource model.
   real :: slab_crit_thick !< The thickness beyond which the slab ice optics no
@@ -97,13 +97,11 @@ subroutine SIS_optics_init(param_file, CS, slab_optics)
   call get_param(param_file, mdl, "DO_POND", CS%do_pond, &
                  "If true, calculate melt ponds and use them for\n"//&
                  "shortwave radiation calculation.", default=.false.)
-  call get_param(param_file, mdl, "MIN_POND_FRAC", CS%min_pond_frac, &
-                 "Minimum melt pond cover (by ponds at sea level)\n"//&
-                 "pond drains to this when ice is porous.", default=0.2)
-  call get_param(param_file, mdl, "MAX_POND_FRAC", CS%max_pond_frac, &
-                 "Maximum melt pond cover - associated with pond volume\n"//&
-                 "that suppresses ice top to waterline", default=0.5)
-
+  call get_param(param_file, mdl, "DEL_P", CS%del_p, &
+                 "Ratio of pond depth to pond area fraction (m)", default=0.8)
+  call get_param(param_file, mdl, "R_SAT", CS%r_sat, &
+                 "Ratio of liquid to liquid+snow water that can be\n"//&
+                 "held in snow without forming radiative pond", default=0.15)
   call get_param(param_file, mdl, "ICE_DELTA_EDD_R_ICE", deltaEdd_R_ice, &
                  "A dreadfully documented tuning parameter for the radiative \n"//&
                  "propeties of sea ice with the delta-Eddington radiative \n"//&
@@ -156,29 +154,30 @@ subroutine SIS_optics_init(param_file, CS, slab_optics)
 end subroutine SIS_optics_init
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
-!> ice_optics_SIS2 sets albedo, penetrating solar, and ice/snow transmissivity
-subroutine ice_optics_SIS2(mp, hs, hi, ts, tfw, NkIce, albedos, abs_sfc, &
+! ice_optics - set albedo, penetrating solar, and ice/snow transmissivity      !
+!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
+subroutine ice_optics_SIS2(hp, hs, hi, ts, tfw, NkIce, albedos, abs_sfc, &
                     abs_snow, abs_ice_lay, abs_ocn, abs_int, CS, ITV, coszen_in)
-  real, intent(in   ) :: mp  !< pond mass [kg m-2]
-  real, intent(in   ) :: hs  !< snow thickness [m]
-  real, intent(in   ) :: hi  !< ice thickness [m]
-  real, intent(in   ) :: ts  !< surface temperature [degC].
-  real, intent(in   ) :: tfw !< seawater freezing temperature [degC]
-  integer, intent(in) :: NkIce !< The number of sublayers in the ice
-  real, dimension(:), intent(  out) :: albedos !< ice surface albedos (0-1) [nondim]
-  real, intent(  out) :: abs_sfc  !< fraction of absorbed SW that is absorbed at surface [nondim]
-  real, intent(  out) :: abs_snow !< fraction of absorbed SW that is absorbed in snow [nondim]
-  real, intent(  out) :: abs_ice_lay(NkIce) !< fraction of absorbed SW that is absorbed by each ice layer [nondim]
-  real, intent(  out) :: abs_ocn  !< fraction of absorbed SW that is absorbed in ocean [nondim]
-  real, intent(  out) :: abs_int  !< fraction of absorbed SW that is absorbed in ice interior [nondim]
-  type(SIS_optics_CS), intent(in) :: CS  !< The ice optics control structure.
-  type(ice_thermo_type), intent(in) :: ITV !< The ice thermodynamic parameter structure.
-  real, intent(in),optional :: coszen_in !< The cosine of the solar zenith angle [nondim].
+  real, intent(in   ) :: hp  ! pond thickness (m-pond)
+  real, intent(in   ) :: hs  ! snow thickness (m-snow)
+  real, intent(in   ) :: hi  ! ice thickness (m-ice)
+  real, intent(in   ) :: ts  ! surface temperature in deg C.
+  real, intent(in   ) :: tfw ! seawater freezing temperature
+  integer, intent(in) :: NkIce ! The number of sublayers in the ice
+  real, dimension(:), intent(  out) :: albedos  ! ice surface albedos (0-1)
+  real, intent(  out) :: abs_sfc  ! frac abs sw abs at surface
+  real, intent(  out) :: abs_snow ! frac abs sw abs in snow
+  real, intent(  out) :: abs_ice_lay(NkIce) ! frac abs sw abs by each ice layer
+  real, intent(  out) :: abs_ocn  ! frac abs sw abs in ocean
+  real, intent(  out) :: abs_int  ! frac abs sw abs in ice interior
+  type(SIS_optics_CS), intent(in) :: CS  ! The ice optics control structure.
+  type(ice_thermo_type), intent(in) :: ITV ! The ice thermodynamic parameter structure.
+  real, intent(in),optional :: coszen_in ! The cosine of the solar zenith angle.
 
-  real :: alb             ! The albedo for all bands, 0-1 [nondim].
-  real :: as              ! A snow albedo, 0-1 [nondim].
-  real :: ai              ! The ice albedo, 0-1 [nondim].
-  real :: snow_cover      ! The fraction of the area covered by snow, 0-1 [nondim].
+  real :: alb             ! The albedo for all bands, 0-1, nondimensional.
+  real :: as              ! A snow albedo, 0-1, nondimensional.
+  real :: ai              ! The ice albedo, 0-1, nondimensional.
+  real :: snow_cover      ! The fraction of the area covered by snow, 0-1, ND.
   real :: fh              ! A weighting fraction of the ice albedo (as compared
                           ! with the albedo of water) when ice is thin, 0-1 [nondim].
   real :: coalb, I_coalb  ! The coalbedo (0-1) and its reciprocal.
@@ -251,7 +250,7 @@ subroutine ice_optics_SIS2(mp, hs, hi, ts, tfw, NkIce, albedos, abs_sfc, &
     albsno  , & ! snow albedo, for history [nondim]
     albpnd      ! pond albedo, for history [nondim]
 
-  real (kind=dbl_kind) :: max_mp, hs_mask_pond, pond_decr
+  real (kind=dbl_kind) :: r_p, hmx, tmp
 
   nb = size(albedos)
 
@@ -310,20 +309,30 @@ subroutine ice_optics_SIS2(mp, hs, hi, ts, tfw, NkIce, albedos, abs_sfc, &
       call get_SIS2_thermo_coefs(ITV, rho_ice=rho_ice, rho_snow=rho_snow, &
                                  rho_water=rho_water)
 
-      max_mp = (Rho_water-Rho_ice)*hi  ! max pond allowed by waterline
-      fp(1,1) = CS%max_pond_frac*sqrt(min(1.0,mp/max_mp))
-      ! set average pond depth (max. = 2*average)
-      hprad(1,1) = mp/(fp(1,1)*1000)  ! freshwater density = 1000 kg/m2
-      fs(1,1) = fs(1,1)*(1-fp(1,1))   ! reduce fs to frac of pond-free ice
-      ! decrement fp (increment fs) for snow masking of pond: pond is completely
-      ! masked when snow depth contains 2*average_pond_depth in its pore space
-      if (hs>0.0 .and. hprad(1,1)>0.0) then
-        hs_mask_pond = 2*hprad(1,1)*Rho_ice/(Rho_ice-Rho_snow)
-        pond_decr = fp(1,1)*min(1.0,hs/hs_mask_pond)
-        fp(1,1) = fp(1,1) - pond_decr
-        fs(1,1) = fs(1,1) + pond_decr
+      if (hp > 0.0001) then ! less than .1 mm has no radiative effect
+        fp(1,1) = sqrt(min(1.0,hp/CS%del_p)) ! using CESM/SHEBA rule
+        hprad(1,1) = hp/fp(1,1) ! set average pond depth for radiation
+
+        ! snow masking: 1st for water held in snow; 2nd for water based on ice
+        r_p = rho_water*hp/(rho_water*hp+rho_snow*hs)
+        if (r_p < CS%r_sat) then ! all "pond" water held in snow: no rad. effect
+          fp(1,1) = 0.0          ! probably should use to reduce snow albedo
+          hprad(1,1) = 0.0
+        else ! pond water base on sea ice
+          hmx = hs*(rho_water - rho_snow)/rho_water
+          tmp = max(0.0, sign(1.0, hprad(1,1)-hmx)) ! 1 if hprad>=hmx, else 0
+          hprad(1,1) = (rho_water*hprad(1,1) + rho_snow*hs*tmp) &
+                     / (rho_water - rho_snow*(1.0-tmp))
+          vsno (1,1) = hs - hprad(1,1)*fp(1,1)*(1.0-tmp)
+          hprad(1,1) = hprad(1,1) * tmp
+          fp(1,1)    = fp(1,1)    * tmp
+        endif
+        fs(1,1) = min(fs(1,1),1-fp(1,1))
+      else ! pond to small for rad. effect
+        fp(1,1) = 0.0
+        hprad(1,1) = 0.0
       endif
-    else
+    else ! do_pond = .false.
       call shortwave_dEdd0_set_pond(nx_block, ny_block, icells, indxi, indxj, &
                aice, Tsfc, fs, fp, hprad) ! out: fp, hprad
     endif

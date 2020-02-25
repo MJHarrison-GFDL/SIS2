@@ -50,6 +50,7 @@ use SIS_hor_grid,  only : SIS_hor_grid_type
 use SIS_ice_diags, only : ice_state_diags_type, register_ice_state_diagnostics
 use SIS_ice_diags, only : post_ocean_sfc_diagnostics, post_ice_state_diagnostics
 use SIS_sum_output, only : write_ice_statistics, SIS_sum_output_init, SIS_sum_out_CS
+use SIS_sum_output, only : accumulate_ridge_overboard
 use SIS_tracer_flow_control, only : SIS_tracer_flow_control_CS
 use SIS_transport, only : SIS_transport_init, SIS_transport_end
 use SIS_transport, only : SIS_transport_CS, adjust_ice_categories, cell_average_state_type
@@ -359,11 +360,22 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
 
+<<<<<<< HEAD
   !### if (CS%merged_cont) then  !### This is here for debugging only.  Delete it later.
   !  call SIS_multi_dyn_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, IG, tracer_CSp, &
   !                           .true., .true., dt_slow)
   !  return
   !endif
+=======
+  real, dimension(SZI_(G),SZJ_(G),IG%CatIce) :: &
+    rdg_frac    ! fraction of ridged ice per category
+  real, dimension(SZI_(G),SZJ_(G)) :: &
+    rdg_open, & ! formation rate of open water due to ridging
+    rdg_vosh, & ! rate of ice mass shifted from level to ridged ice
+!!   rdg_s2o, &  ! snow mass [kg m-2] dumped into ocean during ridging
+    rdg_rate    ! Niki: Where should this come from?
+  real    :: tmp3  ! This is a bad name - make it more descriptive!
+>>>>>>> winton/melt_pond
 
   CS%n_calls = CS%n_calls + 1
   IOF%stress_count = 0
@@ -589,7 +601,17 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
 
         call mpp_clock_begin(iceClock4)
 
+<<<<<<< HEAD
       enddo ! nds=1,ndyn_steps
+=======
+  do j=jsc,jec ; do i=isc,iec
+    IOF%snow_to_ocn(i,j) = 0.0 ! initialize snow dumped by ridging to the ocean
+    IOF%enth_to_ocn(i,j) = 0.0
+    IOF%water_to_ocn(i,j) = 0.0
+  enddo; enddo
+
+  do nds=1,ndyn_steps
+>>>>>>> winton/melt_pond
 
       ! Do ice mass transport and related tracer transport.  This updates the category-decomposed ice state.
       call mpp_clock_begin(iceClock8)
@@ -1149,6 +1171,7 @@ subroutine slab_ice_dyn_trans(IST, OSS, FIA, IOF, dt_slow, CS, G, US, IG, tracer
     WindStr_y_ocn_Cv, & ! Meridional wind stress on the ice-free ocean on C-grid v-points [kg m-2 L T-2 ~> Pa].
     str_y_ice_ocn_Cv  ! Meridional ice-ocean stress on C-grid v-points [Pa].
 
+<<<<<<< HEAD
   real, dimension(SZIB_(G),SZJB_(G)) :: diagVarBx ! An temporary array for diagnostics.
   real, dimension(SZIB_(G),SZJB_(G)) :: diagVarBy ! An temporary array for diagnostics.
   real :: ps_vel   ! The fractional thickness catetory coverage at a velocity point.
@@ -1159,6 +1182,35 @@ subroutine slab_ice_dyn_trans(IST, OSS, FIA, IOF, dt_slow, CS, G, US, IG, tracer
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = 1
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
+=======
+    if (CS%Cgrid_dyn) then
+      call ice_transport(IST%part_size, IST%mH_ice, IST%mH_snow, IST%mH_pond, &
+                         IST%u_ice_C, IST%v_ice_C, IST%TrReg, &
+                         dt_slow_dyn, G, IG, CS%SIS_transport_CSp,&
+                         IST%rdg_mice, IOF%snow_to_ocn, IOF%enth_to_ocn, &
+                         IOF%water_to_ocn, rdg_rate, rdg_open, rdg_vosh)
+    else
+      ! B-grid transport
+      ! Convert the velocities to C-grid points for transport.
+      uc(:,:) = 0.0; vc(:,:) = 0.0
+      do j=jsc,jec ; do I=isc-1,iec
+        uc(I,j) = 0.5 * ( IST%u_ice_B(I,J-1) + IST%u_ice_B(I,J) )
+      enddo ; enddo
+      do J=jsc-1,jec ; do i = isc,iec
+        vc(i,J) = 0.5 * ( IST%v_ice_B(I-1,J) + IST%v_ice_B(I,J) )
+      enddo ; enddo
+
+      call ice_transport(IST%part_size, IST%mH_ice, IST%mH_snow, IST%mH_pond, &
+                         uc, vc, IST%TrReg, &
+                         dt_slow_dyn, G, IG, CS%SIS_transport_CSp, &
+                         IST%rdg_mice, IOF%snow_to_ocn, IOF%enth_to_ocn, &
+                         IOF%water_to_ocn, rdg_rate, rdg_open, rdg_vosh)
+    endif
+
+    if (CS%column_check) &
+      call write_ice_statistics(IST, CS%Time, CS%n_calls, G, IG, CS%sum_output_CSp, &
+                                message="      Post_transport")! , check_column=.true.)
+>>>>>>> winton/melt_pond
 
   CS%n_calls = CS%n_calls + 1
   IOF%stress_count = 0
@@ -1170,7 +1222,11 @@ subroutine slab_ice_dyn_trans(IST, OSS, FIA, IOF, dt_slow, CS, G, US, IG, tracer
 
   do nds=1,ndyn_steps
 
+<<<<<<< HEAD
     call enable_SIS_averaging(dt_slow_dyn, CS%Time - real_to_time((ndyn_steps-nds)*dt_slow_dyn), CS%diag)
+=======
+  call accumulate_ridge_overboard(IOF, G, CS%sum_output_CSp)
+>>>>>>> winton/melt_pond
 
     call mpp_clock_begin(iceClock4)
     !$OMP parallel do default(shared)
