@@ -242,8 +242,9 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, CS, rdg_rate)
     mca0_ice, &  ! The initial mass of ice per unit ocean area in a cell [R Z ~> kg m-2].
     mca0_snow    ! The initial mass of snow per unit ocean area in a cell [R Z ~> kg m-2].
 !### These will be needed when the ice ridging is properly implemented.
-!  real :: snow2ocn !< Snow dumped into ocean during ridging [R Z ~> kg m-2]
-!  real :: enth_snow2ocn !< Mass-averaged enthalpy of the now dumped into ocean during ridging [Q ~> J kg-1]
+  real, dimension(SZI_(G),SZJB_(G)) :: snow2ocn !< Snow dumped into ocean during ridging [R Z ~> kg m-2]
+  real, dimension(SZI_(G),SZJB_(G)) :: water2ocn !< pond dumped into ocean during ridging [R Z ~> kg m-2]
+  real, dimension(SZI_(G),SZJB_(G)) :: enth_snow2ocn !< Mass-averaged enthalpy of the now dumped into ocean during ridging [Q ~> J kg-1]
 !  real, dimension(SZI_(G),SZJ_(G)) :: &
 !    rdg_open, & ! formation rate of open water due to ridging [T-1 ~> s-1]
 !    rdg_vosh    ! rate of ice mass shifted from level to ridged ice [R Z T-1 ~> kg m-2 s-1]
@@ -328,6 +329,26 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, CS, rdg_rate)
   call pass_var(IST%mH_pond, G%Domain, complete=.false.)
   call pass_var(IST%mH_snow, G%Domain, complete=.false.)
   call pass_var(IST%mH_ice, G%Domain, complete=.true.)
+
+  if (CS%do_ridging) then
+     ! Ridge the ice (Icepack scheme); Ignore pond ridging fluxes since this has not yet been implemented.
+     if (CS%Cgrid_dyn) then
+        call ice_ridging(IST%part_sz, CAS%m_ice, CAS%m_snow, CAS%m_pond, IST%mH_ice, IST%mH_snow, &
+             IST%mH_pond, TrReg, G, IG, dt_slow, IST%u_ice_C, IST%v_ice_C, snow2ocn, enth2ocn, water2ocn)
+     else
+        call ice_ridging(IST%part_sz, CAS%m_ice, CAS%m_snow, CAS%m_pond, IST%mH_ice, IST%mH_snow, &
+             IST%mH_pond, TrReg, G, IG, dt_slow, IST%u_ice_B, IST%v_ice_B, snow2ocn, enth2ocn, water2ocn)
+     endif
+
+     do j=jsc,jec; do i=isc,iec
+       if (snow2ocn(i,j) > 0.0) then
+          IST%enth_snow_to_ocn(i,j) = (IST%enth_snow_to_ocn(i,j) * IST%snow_to_ocn(i,j) + &
+               enth_snow2ocn(i,j) * snow2ocn(i,j)) / &
+               (IST%snow_to_ocn(i,j) + snow2ocn(i,j))
+          IST%snow_to_ocn(i,j) = IST%snow_to_ocn(i,j) + snow2ocn(i,j)
+       endif
+     enddo; enddo
+  endif
 
   if (CS%check_conservation) then
     call get_total_mass(IST, G, US, IG, tot_ice, tot_snow, scale=US%RZ_to_kg_m2)
