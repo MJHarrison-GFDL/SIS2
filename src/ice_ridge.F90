@@ -340,6 +340,8 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, US, dt)
                       dvirdgdt,     opening,        &
                       fpond,                        &
                       fresh,        fhocn,          &
+                      faero_ocn,   fiso_ocn,   &
+                      aparticn=aparticn,  &
                       krdgn=krdgn,             &
                       aredistn=aredistn,       &
                       vredistn=vredistn,       &
