@@ -616,11 +616,11 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
 
       if (DS2d%nts==0) then
         if (CS%do_ridging) then
-          call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, CS%SIS_transport_CSp, &
+          call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, dt_slow, CS%SIS_transport_CSp, &
                                     rdg_rate=DS2d%avg_ridge_rate)
           DS2d%ridge_rate_count = 0. ; DS2d%avg_ridge_rate(:,:) = 0.0
         else
-          call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, CS%SIS_transport_CSp)
+          call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, dt_slow, CS%SIS_transport_CSp)
         endif
       endif
       call mpp_clock_end(iceClock8)
@@ -752,12 +752,14 @@ subroutine complete_IST_transport(DS2d, CAS, IST, dt_adv_cycle, G, US, IG, CS)
                          uh_tot=DS2d%uh_step(:,:,1:DS2d%nts), vh_tot=DS2d%vh_step(:,:,1:DS2d%nts))
   ! Convert the cell-averaged state back to the ice-state type, adjusting the
   ! category mass distributions, doing ridging, and updating the partition sizes.
+
+!! Timestep for ridging??
   if (CS%do_ridging) then
-    call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, CS%SIS_transport_CSp, &
+    call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, dt_adv_cycle, CS%SIS_transport_CSp, &
                               rdg_rate=DS2d%avg_ridge_rate)
     DS2d%ridge_rate_count = 0. ; DS2d%avg_ridge_rate(:,:) = 0.0
   else
-    call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, CS%SIS_transport_CSp)
+    call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, dt_adv_cycle, CS%SIS_transport_CSp)
   endif
   DS2d%nts = 0 ! There is no outstanding transport to be done and IST is up-to-date.
 
