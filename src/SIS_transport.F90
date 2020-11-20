@@ -242,9 +242,9 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, CS, rdg_rate)
     mca0_ice, &  ! The initial mass of ice per unit ocean area in a cell [R Z ~> kg m-2].
     mca0_snow    ! The initial mass of snow per unit ocean area in a cell [R Z ~> kg m-2].
 !### These will be needed when the ice ridging is properly implemented.
-  real, dimension(SZI_(G),SZJB_(G)) :: snow2ocn !< Snow dumped into ocean during ridging [R Z ~> kg m-2]
-  real, dimension(SZI_(G),SZJB_(G)) :: water2ocn !< pond dumped into ocean during ridging [R Z ~> kg m-2]
-  real, dimension(SZI_(G),SZJB_(G)) :: enth_snow2ocn !< Mass-averaged enthalpy of the now dumped into ocean during ridging [Q ~> J kg-1]
+  real, dimension(SZI_(G),SZJ_(G)) :: snow2ocn !< Snow dumped into ocean during ridging [R Z ~> kg m-2]
+  real, dimension(SZI_(G),SZJ_(G)) :: water2ocn !< pond dumped into ocean during ridging [R Z ~> kg m-2]
+  real, dimension(SZI_(G),SZJ_(G)) :: enth_snow2ocn !< Mass-averaged enthalpy of the now dumped into ocean during ridging [Q ~> J kg-1]
 !  real, dimension(SZI_(G),SZJ_(G)) :: &
 !    rdg_open, & ! formation rate of open water due to ridging [T-1 ~> s-1]
 !    rdg_vosh    ! rate of ice mass shifted from level to ridged ice [R Z T-1 ~> kg m-2 s-1]
