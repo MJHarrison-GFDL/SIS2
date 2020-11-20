@@ -311,6 +311,10 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
 !    enddo ; enddo
 !  endif   ! do_ridging
 
+  if (CS%do_ridging) then
+     call ice_ridging(IST, G, IG, CAS%m_ice, CAS%m_snow, CAS%m_pond, TrReg, US, dt)
+  endif
+
   !   Recalculate IST%part_size(:,:,0) to ensure that the sum of IST%part_size adds up to 1.
   ! Compress_ice should already have taken care of this within the computational
   ! domain, but with a slightly different order of arithmetic.  The max is here
@@ -331,9 +335,6 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
   call pass_var(IST%mH_snow, G%Domain, complete=.false.)
   call pass_var(IST%mH_ice, G%Domain, complete=.true.)
 
-  if (CS%do_ridging) then
-     call ice_ridging(IST, G, IG, CAS%m_ice, CAS%m_snow, CAS%m_pond, TrReg, US, dt)
-  endif
 
   if (CS%check_conservation) then
     call get_total_mass(IST, G, US, IG, tot_ice, tot_snow, scale=US%RZ_to_kg_m2)
