@@ -82,6 +82,8 @@ type ice_state_type
   real, allocatable, dimension(:,:) :: &
     snow_to_ocn, & !< The mass per unit ocean area of snow that will be dumped into the
                    !! ocean due to recent mechanical activities like ridging or drifting [R Z ~> kg m-2].
+    water_to_ocn, & !< The mass per unit ocean area of pond water that will be dumped into the
+                   !! ocean due to recent mechanical activities like ridging or drifting [R Z ~> kg m-2].
     enth_snow_to_ocn !< The average enthalpy of the snow that will be dumped into the
                    !! ocean due to recent mechanical activities like ridging or drifting [Q ~> J kg-1].
 
@@ -457,6 +459,7 @@ subroutine alloc_IST_arrays(HI, IG, IST, omit_velocities, omit_Tsurf, do_ridging
 
   if (present(do_ridging)) then ; if (do_ridging) then
     allocate(IST%snow_to_ocn(isd:ied, jsd:jed)) ; IST%snow_to_ocn(:,:) = 0.0
+    allocate(IST%water_to_ocn(isd:ied, jsd:jed)) ; IST%water_to_ocn(:,:) = 0.0
     allocate(IST%enth_snow_to_ocn(isd:ied, jsd:jed)) ; IST%enth_snow_to_ocn(:,:) = 0.0
     allocate(IST%rdg_mice(isd:ied, jsd:jed, CatIce)) ; IST%rdg_mice(:,:,:) = 0.0
   endif ; endif

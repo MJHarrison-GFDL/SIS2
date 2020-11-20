@@ -223,11 +223,12 @@ end subroutine ice_cat_transport
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> finish_ice_transport completes the ice transport and thickness class redistribution
-subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, CS, rdg_rate)
+subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
   type(cell_average_state_type),     intent(inout) :: CAS !< A structure with ocean-cell averaged masses.
   type(ice_state_type),              intent(inout) :: IST !< A type describing the state of the sea ice
   type(SIS_hor_grid_type),           intent(inout) :: G   !< The horizontal grid type
   type(ice_grid_type),               intent(inout) :: IG  !< The sea-ice specific grid type
+  real,                              intent(in)    :: dt  !< The timestep used for ridging [T -> s].
   type(SIS_tracer_registry_type),    pointer       :: TrReg !< The registry of SIS ice and snow tracers.
   type(unit_scale_type),             intent(in)    :: US  !< A structure with unit conversion factors
   type(SIS_transport_CS),            pointer       :: CS  !< A pointer to the control structure for this module
@@ -310,6 +311,10 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, CS, rdg_rate)
 !    enddo ; enddo
 !  endif   ! do_ridging
 
+  if (CS%do_ridging) then
+     call ice_ridging(IST, G, IG, CAS%m_ice, CAS%m_snow, CAS%m_pond, TrReg, US, dt)
+  endif
+
   !   Recalculate IST%part_size(:,:,0) to ensure that the sum of IST%part_size adds up to 1.
   ! Compress_ice should already have taken care of this within the computational
   ! domain, but with a slightly different order of arithmetic.  The max is here
@@ -330,25 +335,6 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, CS, rdg_rate)
   call pass_var(IST%mH_snow, G%Domain, complete=.false.)
   call pass_var(IST%mH_ice, G%Domain, complete=.true.)
 
-  if (CS%do_ridging) then
-     ! Ridge the ice (Icepack scheme); Ignore pond ridging fluxes since this has not yet been implemented.
-     if (CS%Cgrid_dyn) then
-        call ice_ridging(IST%part_sz, CAS%m_ice, CAS%m_snow, CAS%m_pond, IST%mH_ice, IST%mH_snow, &
-             IST%mH_pond, TrReg, G, IG, dt_slow, IST%u_ice_C, IST%v_ice_C, snow2ocn, enth2ocn, water2ocn)
-     else
-        call ice_ridging(IST%part_sz, CAS%m_ice, CAS%m_snow, CAS%m_pond, IST%mH_ice, IST%mH_snow, &
-             IST%mH_pond, TrReg, G, IG, dt_slow, IST%u_ice_B, IST%v_ice_B, snow2ocn, enth2ocn, water2ocn)
-     endif
-
-     do j=jsc,jec; do i=isc,iec
-       if (snow2ocn(i,j) > 0.0) then
-          IST%enth_snow_to_ocn(i,j) = (IST%enth_snow_to_ocn(i,j) * IST%snow_to_ocn(i,j) + &
-               enth_snow2ocn(i,j) * snow2ocn(i,j)) / &
-               (IST%snow_to_ocn(i,j) + snow2ocn(i,j))
-          IST%snow_to_ocn(i,j) = IST%snow_to_ocn(i,j) + snow2ocn(i,j)
-       endif
-     enddo; enddo
-  endif
 
   if (CS%check_conservation) then
     call get_total_mass(IST, G, US, IG, tot_ice, tot_snow, scale=US%RZ_to_kg_m2)

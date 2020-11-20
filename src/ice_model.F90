@@ -92,7 +92,7 @@ use SIS_types, only : redistribute_sOSS_to_sOSS, FIA_chksum, IOF_chksum, transla
 use SIS_utils, only : post_avg, ice_grid_chksum
 use SIS_hor_grid, only : SIS_hor_grid_type, set_hor_grid, SIS_hor_grid_end, set_first_direction
 use SIS_fixed_initialization, only : SIS_initialize_fixed
-
+use ice_ridging_mod, only : ice_ridging_init
 use ice_grid, only : set_ice_grid, ice_grid_end, ice_grid_type
 use ice_spec_mod, only : get_sea_surface
 
@@ -2119,6 +2119,9 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                                sIST%TrReg, snow_tracer=.false., &
                                massless_val=massless_ice_salin, nonnegative=.true.)
     endif
+
+
+    call ice_ridging_init(sG,sIG,sIST%TrReg,US)
 
   !   Register any tracers that will be handled via tracer flow control for
   ! restarts and advection.
