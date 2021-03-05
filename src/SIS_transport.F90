@@ -262,11 +262,18 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
   !  Convert the ocean-cell averaged properties back into the ice_state_type.
   call cell_ave_state_to_ice_state(CAS, G, US, IG, CS, IST, TrReg)
 
+
+  if (CS%do_ridging) then
+  ! Compress the ice using the ridging scheme taken from the CICE model
+     call ice_ridging(IST, G, IG, CAS%m_ice, CAS%m_snow, CAS%m_pond, TrReg, US, dt)
+  else
   ! Compress the ice where the fractional coverage exceeds 1, starting with the
   ! thinnest category, in what amounts to a minimalist version of a sea-ice
   ! ridging scheme.  A more complete ridging scheme would also compress
   ! thicker ice and allow the fractional ice coverage to drop below 1.
-  call compress_ice(IST%part_size, IST%mH_ice, IST%mH_snow, IST%mH_pond, TrReg, G, US, IG, CS, CAS)
+
+     call compress_ice(IST%part_size, IST%mH_ice, IST%mH_snow, IST%mH_pond, TrReg, G, US, IG, CS, CAS)
+  endif
 
   if (CS%bounds_check) call check_SIS_tracer_bounds(TrReg, G, IG, "After compress_ice")
 
@@ -311,9 +318,6 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
 !    enddo ; enddo
 !  endif   ! do_ridging
 
-  if (CS%do_ridging) then
-     call ice_ridging(IST, G, IG, CAS%m_ice, CAS%m_snow, CAS%m_pond, TrReg, US, dt)
-  endif
 
   !   Recalculate IST%part_size(:,:,0) to ensure that the sum of IST%part_size adds up to 1.
   ! Compress_ice should already have taken care of this within the computational
