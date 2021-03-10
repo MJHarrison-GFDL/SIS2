@@ -33,6 +33,7 @@ use icepack_mechred, only: ridge_ice
 use icepack_warnings, only: icepack_warnings_flush, icepack_warnings_aborted, &
                             icepack_warnings_setabort
 use icepack_tracers, only: icepack_init_tracer_indices, icepack_init_tracer_sizes
+use icepack_tracers, only: icepack_query_tracer_sizes
 use icepack_parameters, only : icepack_init_parameters
 implicit none ; private
 
@@ -231,6 +232,7 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, US, dt)
   integer :: m, n ! loop vars for tracer; n is tracer #; m is tracer layer
   integer(kind=int_kind) :: nt_tsfc_in, nt_qice_in, nt_qsno_in, nt_sice_in
   integer(kind=int_kind) :: nL_ice, nL_snow ! number of tracer levels
+  integer(kind=int_kind) :: ncat_out, ntrcr_out, nilyr_out, nslyr_out ! array sizes returned from Icepack query
 
   nSlyr = IG%NkSnow
   nIlyr = IG%NkIce
@@ -239,6 +241,11 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, US, dt)
 
   call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
   call get_SIS2_thermo_coefs(IST%ITV, rho_snow=rho_snow)
+
+  call icepack_query_tracer_sizes(ncat_out=ncat_out,ntrcr_out=ntrcr_out, nilyr_out=nilyr_out, nslyr_out=nslyr_out)
+
+
+  if (nIlyr .ne. nilyr_out .or. nSlyr .ne. nslyr_out ) call SIS_error(FATAL,'nilyr or nslyr mismatch with Icepack')
 
   ! copy strain calculation code from SIS_C_dynamics; might be a more elegant way ...
   !
@@ -333,6 +340,8 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, US, dt)
       trcrn(ntrcr,1:nCat) = IST%mH_pond(i,j,1:nCat)
       trcr_depend(ntrcr) = 0; ! 0 means ice area-based tracer
       trcr_base(ntrcr,:) = 0.0; trcr_base(ntrcr,1) = 1.0; ! 1st index for ice area
+
+      if (ntrcr .ne. ntrcr_out ) call SIS_error(FATAL,'ntrcr mismatch with Icepack')
 
       tr_brine = .false.
       dardg1dt=0.0
