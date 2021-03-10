@@ -264,8 +264,8 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
 
 
   if (CS%do_ridging) then
-  ! Compress the ice using the ridging scheme taken from the CICE model
-     call ice_ridging(IST, G, IG, CAS%m_ice, CAS%m_snow, CAS%m_pond, TrReg, US, dt)
+    ! Compress the ice using the ridging scheme taken from the CICE-Icepack module
+    call ice_ridging(IST, G, IG, CAS%m_ice, CAS%m_snow, CAS%m_pond, TrReg, US, dt)
   else
   ! Compress the ice where the fractional coverage exceeds 1, starting with the
   ! thinnest category, in what amounts to a minimalist version of a sea-ice
