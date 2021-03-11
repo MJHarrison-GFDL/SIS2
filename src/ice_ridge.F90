@@ -279,7 +279,7 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, US, dt, r
   call get_SIS_tracer_pointer("enth_snow",TrReg,Tr_snow_enth_ptr,nL_snow)
   call get_SIS_tracer_pointer("salin_ice",TrReg,Tr_ice_salin_ptr,nL_ice)
 
-  call IST_chksum('before ice ridging ',IST,G,US,IG)
+!  call IST_chksum('before ice ridging ',IST,G,US,IG)
 
   if (present(rdg_rate)) rdg_rate(:,:)=0.0
   do j=jsc,jec; do i=isc,iec
@@ -467,7 +467,7 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, US, dt, r
 
   endif; enddo; enddo ! part_sz, j, i
 
-  call IST_chksum('after ice ridging ',IST,G,US,IG)
+!  call IST_chksum('after ice ridging ',IST,G,US,IG)
 
 end subroutine ice_ridging
 
