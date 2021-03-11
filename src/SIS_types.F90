@@ -94,6 +94,8 @@ type ice_state_type
   real, allocatable, dimension(:,:,:,:) :: enth_snow !< The enthalpy of the snow
                 !! in each category and snow thickness layer [Q ~> J kg-1].
 
+  real, allocatable, dimension(:,:) :: rdg_rate !< The rate of fractional area loss by ridging [T-1 ~> s-1]
+
   real, allocatable, dimension(:,:,:) :: &
     rdg_mice    !< A diagnostic of the ice load that was formed by ridging [R Z ~> kg m-2].
 
@@ -462,6 +464,7 @@ subroutine alloc_IST_arrays(HI, IG, IST, omit_velocities, omit_Tsurf, do_ridging
     allocate(IST%water_to_ocn(isd:ied, jsd:jed)) ; IST%water_to_ocn(:,:) = 0.0
     allocate(IST%enth_snow_to_ocn(isd:ied, jsd:jed)) ; IST%enth_snow_to_ocn(:,:) = 0.0
     allocate(IST%rdg_mice(isd:ied, jsd:jed, CatIce)) ; IST%rdg_mice(:,:,:) = 0.0
+    allocate(IST%rdg_rate(isd:ied, jsd:jed)) ; IST%rdg_rate(:,:) = 0.0
   endif ; endif
 
   if (do_vel) then

@@ -125,7 +125,7 @@ end subroutine ice_ridging_init
 !
 ! ice_ridging is a wrapper for the icepack ridging routine ridge_ice
 !
-subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, US, dt)
+subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, US, dt, rdg_rate)
   type(ice_state_type),              intent(inout) :: IST !< A type describing the state of the sea ice
   type(SIS_hor_grid_type),                       intent(inout) :: G !<  G The ocean's grid structure.
   type(ice_grid_type),                           intent(inout) :: IG !<   The sea-ice-specific grid structure.
@@ -135,7 +135,8 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, US, dt)
   real (kind=dbl_kind),                          intent(in)    :: dt !<   The amount of time over which the ice dynamics are to be.
                                                                      !    advanced in seconds.
 !  logical,                                       intent(in)    :: dyn_Cgrid !<  True if using C-gridd velocities, B-grid if False.
-
+  real, dimension(SZI_(G),SZJ_(G)), intent(inout), optional :: rdg_rate !< Diagnostic of the rate of fractional
+                                                            !! area loss-gain due to ridging (1/s)
 
 
   ! these strain metrics are calculated here from the velocities used for advection
@@ -146,6 +147,10 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, US, dt)
   real, dimension(SZIB_(G),SZJB_(G)) :: &
     sh_Ds       ! sh_Ds is the horizontal shearing strain (du/dy + dv/dx)
                 ! including all metric terms, in s-1.
+
+
+
+
 
   integer :: i, j, k ! loop vars
   integer isc, iec, jsc, jec ! loop bounds
@@ -276,6 +281,7 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, US, dt)
   call get_SIS_tracer_pointer("enth_snow",TrReg,Tr_snow_enth_ptr,nL_snow)
   call get_SIS_tracer_pointer("salin_ice",TrReg,Tr_ice_salin_ptr,nL_ice)
 
+  if (present(rdg_rate)) rdg_rate(:,:)=0.0
   do j=jsc,jec; do i=isc,iec
   if ((G%mask2dT(i,j) .gt. 0.0) .and. (sum(IST%part_size(i,j,1:nCat)) .gt. 0.0)) then
   ! feed locations to Icepack's ridge_ice
@@ -396,6 +402,7 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, US, dt)
                       vraftn=vraftn,         &
                       closing_flag=closing_flag ,closing=closing)
 
+      rdg_rate(i,j) = dardg1dt-dardg2dt
 
       if ( icepack_warnings_aborted() ) then
         call icepack_warnings_flush(0);
