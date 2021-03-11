@@ -612,11 +612,12 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
 
       if (DS2d%nts==0) then
         if (CS%do_ridging) then
-          call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, CS%SIS_transport_CSp, &
-                                    rdg_rate=DS2d%avg_ridge_rate)
+          call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, dt_slow_dyn, CS%SIS_transport_CSp, &
+               !                                    rdg_rate=DS2d%avg_ridge_rate)
+                                    rdg_rate=IST%rdg_rate)
           DS2d%ridge_rate_count = 0. ; DS2d%avg_ridge_rate(:,:) = 0.0
         else
-          call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, CS%SIS_transport_CSp)
+          call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, dt_slow_dyn,CS%SIS_transport_CSp)
         endif
       endif
       call cpu_clock_end(iceClock8)
@@ -749,11 +750,12 @@ subroutine complete_IST_transport(DS2d, CAS, IST, dt_adv_cycle, G, US, IG, CS)
   ! Convert the cell-averaged state back to the ice-state type, adjusting the
   ! category mass distributions, doing ridging, and updating the partition sizes.
   if (CS%do_ridging) then
-    call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, CS%SIS_transport_CSp, &
-                              rdg_rate=DS2d%avg_ridge_rate)
+    call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, dt_adv_cycle, CS%SIS_transport_CSp, &
+         !                              rdg_rate=DS2d%avg_ridge_rate)
+                              rdg_rate=IST%rdg_rate)
     DS2d%ridge_rate_count = 0. ; DS2d%avg_ridge_rate(:,:) = 0.0
   else
-    call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, CS%SIS_transport_CSp)
+    call finish_ice_transport(CS%CAS, IST, IST%TrReg, G, US, IG, dt_adv_cycle, CS%SIS_transport_CSp)
   endif
   DS2d%nts = 0 ! There is no outstanding transport to be done and IST is up-to-date.
 
@@ -997,7 +999,7 @@ subroutine SIS_merged_dyn_cont(OSS, FIA, IOF, DS2d, dt_cycle, Time_start, G, US,
       call SIS_C_dynamics(DS2d%ice_cover, DS2d%mca_step(:,:,DS2d%nts), DS2d%mi_sum, &
                           DS2d%u_ice_C, DS2d%v_ice_C, &
                           OSS%u_ocn_C, OSS%v_ocn_C, WindStr_x_Cu, WindStr_y_Cv, OSS%sea_lev, &
-                          str_x_ice_ocn_Cu, str_y_ice_ocn_Cv, dt_slow_dyn, G, US, CS%SIS_C_dyn_CSp)
+                          str_x_ice_ocn_Cu, str_y_ice_ocn_Cv,  dt_slow_dyn, G, US, CS%SIS_C_dyn_CSp)
 
       call cpu_clock_end(iceClocka)
 
