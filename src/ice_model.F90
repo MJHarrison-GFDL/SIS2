@@ -131,7 +131,7 @@ public :: unpack_ocean_ice_boundary, unpack_ocn_ice_bdry, exchange_slow_to_fast_
 public :: ice_model_fast_cleanup, unpack_land_ice_boundary
 public :: exchange_fast_to_slow_ice, update_ice_model_slow
 public :: update_ice_slow_thermo, update_ice_dynamics_trans
-public :: sfc_mass_in_rescale_factor, close_sfc_mass_balance, rescale_mass_in
+public :: sfc_mass_in_rescale_factor, close_sfc_mass_balance, rescale_mass_in, set_ocean_top_fluxes
 
 !>@{ CPU time clock IDs
 integer :: iceClock
@@ -1757,6 +1757,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
   type(ice_OBC_type), pointer :: OBC_in => NULL()
   logical :: adjust_smb, read_pmt
   real :: smb_north_lat, smb_south_lat, smb_window, smb_north, smb_south, pmt_window
+  real :: smb_north_scale, smb_south_scale
   real :: pmt_south, pnt_north
   integer :: ipmt_window, outunit
   type(surface_mb_type), dimension(:), pointer :: SMB
@@ -1990,6 +1991,9 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                  "If true, constrain the surface mass fluxes at the top of "//&
                  "the sea-ice using pre-calculated values. ", &
                  default=.false.)
+  call get_param(param_file, mdl, "VERBOSE_SMB", Ice%verbose_smb, &
+                 "If true, pipe diagnostics to stdout. ", &
+                 default=.false.)
 
 
   nCat_dflt = 5 ; if (slab_ice) nCat_dflt = 1
@@ -2189,9 +2193,15 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
        call get_param(param_file, mdl, "SMB_NORTH", smb_north, &
                  "northern SMB.", &
                  units="kg s-1", default=1.e9, scale=1.0)
+       call get_param(param_file, mdl, "SMB_NORTH_SCALE", smb_north_scale, &
+                 "northern SMB scaling.", &
+                 units="none", default=1.0, scale=1.0)
        call get_param(param_file, mdl, "SMB_SOUTH", smb_south, &
                  "southern SMB.", &
                  units="kg s-1", default=1.e9, scale=1.0)
+       call get_param(param_file, mdl, "SMB_SOUTH_SCALE", smb_south_scale, &
+                 "southern SMB scaling.", &
+                 units="none", default=1.0, scale=1.0)
        call get_param(param_file, mdl, "SMB_MAX_RESCALE",pr_max_rescale, &
                  "Maximum rescaling for precipitation.", &
                  units="none", default=0.25, scale=1.0)
@@ -2206,12 +2216,15 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
        SMB(1)%lat_bounds(1)=-90.
        SMB(1)%lat_bounds(2)=smb_south_lat
        SMB(1)%read_pmt = read_pmt
+       SMB(1)%smb_factor = smb_south_scale
        SMB(2)%lat_bounds(1)=smb_south_lat
        SMB(2)%lat_bounds(2)=smb_north_lat
        SMB(2)%read_pmt = read_pmt
+       SMB(2)%smb_factor = 1.0
        SMB(3)%lat_bounds(1)=smb_north_lat
        SMB(3)%lat_bounds(2)=90.
        SMB(3)%read_pmt = read_pmt
+       SMB(3)%smb_factor = smb_north_scale
 
        do k=1,3
          do j=jsc,jec ; do i=isc,iec
@@ -2886,9 +2899,16 @@ subroutine sfc_mass_in_rescale_factor(Ice, Smb, rname)
         Smb%mass_out(i,j)=0.0
         Smb%mass_in(i,j) = Smb%mask(i,j)*G%areaT(i,j)*(FIA%runoff(i,j) + FIA%calving(i,j))
         do k=0,ncat
+          if (FIA%lprec_top(i,j,k) .lt. 0.0 .or. FIA%fprec_top(i,j,k) .lt. 0.0) &
+               call SIS_error(FATAL,'smb_adjust:Negative precipitation')
           Smb%mass_in(i,j) = Smb%mass_in(i,j) + IST%part_size(i,j,k)*Smb%mask(i,j)*G%areaT(i,j)*&
                (FIA%lprec_top(i,j,k) + FIA%fprec_top(i,j,k))
-          Smb%mass_out(i,j) = Smb%mass_out(i,j) + IST%part_size(i,j,k)*Smb%mask(i,j)*G%areaT(i,j)*(FIA%evap_top(i,j,k))
+          if (FIA%evap_top(i,j,k) .lt. 0.0) then
+             Smb%mass_in(i,j) = Smb%mass_in(i,j) - IST%part_size(i,j,k)*Smb%mask(i,j)*G%areaT(i,j)*&
+                  (FIA%evap_top(i,j,k))
+          else
+             Smb%mass_out(i,j) = Smb%mass_out(i,j) + IST%part_size(i,j,k)*Smb%mask(i,j)*G%areaT(i,j)*(FIA%evap_top(i,j,k))
+          endif
         enddo
         Smb%net_mass_in(i,j) = Smb%mass_in(i,j) - Smb%mass_out(i,j)
       enddo
@@ -2927,6 +2947,8 @@ subroutine sfc_mass_in_rescale_factor(Ice, Smb, rname)
       Smb%smb_target = Smb%smb_target_fixed
     endif
 
+    Smb%smb_target = Smb%smb_target*Smb%smb_factor
+
     dif = Smb%smb_target - avg
     pr_scale=1.0
     if (Smb%total_in  > 0.) pr_scale = 1.0 + dif/Smb%total_in
@@ -2935,7 +2957,7 @@ subroutine sfc_mass_in_rescale_factor(Ice, Smb, rname)
     Smb%total = Smb%scale_factor*Smb%total_in - Smb%total_out
 
 
-    if (is_root_pe()) print *,'update_smb: ',rname, Smb%scale_factor, avg/1.e9, Smb%total/1.e9, Smb%total_in/1.e9,&
+    if (is_root_pe() .and. Ice%verbose_smb) print *,'update_smb: ',rname, Smb%scale_factor, avg/1.e9, Smb%total/1.e9, Smb%total_in/1.e9,&
          Smb%total_out/1.e9, Smb%smb_target/1.e9
 
     return
@@ -2986,9 +3008,16 @@ subroutine sfc_mass_in_rescale_factor(Ice, Smb, rname)
         Smb(2)%mass_in(i,j)=0.0; Smb(2)%mass_out(i,j)=0.0;Smb(2)%net_mass_in(i,j)=0.0
         Smb(2)%mass_in(i,j) = Smb(2)%mask(i,j)*G%areaT(i,j)*(FIA%runoff(i,j) + FIA%calving(i,j))
         do k=0,ncat
+          if (FIA%lprec_top(i,j,k) .lt. 0.0 .or. FIA%fprec_top(i,j,k) .lt. 0.0) &
+               call SIS_error(FATAL,'smb_adjust:Negative precipitation')
           Smb(2)%mass_in(i,j) = Smb(2)%mass_in(i,j) + IST%part_size(i,j,k)*Smb(2)%mask(i,j)*G%areaT(i,j)*&
                (FIA%lprec_top(i,j,k) + FIA%fprec_top(i,j,k))
-          Smb(2)%mass_out(i,j) = Smb(2)%mass_out(i,j) + IST%part_size(i,j,k)*Smb(2)%mask(i,j)*G%areaT(i,j)*(FIA%evap_top(i,j,k))
+          if (FIA%evap_top(i,j,k) .lt. 0.0) then
+             Smb(2)%mass_in(i,j) = Smb(2)%mass_in(i,j) - IST%part_size(i,j,k)*Smb(2)%mask(i,j)*G%areaT(i,j)*&
+                  (FIA%evap_top(i,j,k))
+          else
+             Smb(2)%mass_out(i,j) = Smb(2)%mass_out(i,j) + IST%part_size(i,j,k)*Smb(2)%mask(i,j)*G%areaT(i,j)*(FIA%evap_top(i,j,k))
+          endif
         enddo
         Smb(2)%net_mass_in(i,j) = Smb(2)%mass_in(i,j) - Smb(2)%mass_out(i,j)
       enddo
@@ -3011,7 +3040,7 @@ subroutine sfc_mass_in_rescale_factor(Ice, Smb, rname)
     if (Smb(2)%total_in  > 0.) then
        pr_scale = 1.0 + dif/Smb(2)%total_in
     else
-       if (is_root_pe()) print *, 'smb_balance: NEGATIVE MASS_IN',Smb(2)%total_in
+       if (is_root_pe() .and. Ice%verbose_smb) print *, 'smb_balance: NEGATIVE MASS_IN',Smb(2)%total_in
     endif
 
     if (pr_scale>0.) Smb(2)%scale_factor = pr_scale
@@ -3019,7 +3048,7 @@ subroutine sfc_mass_in_rescale_factor(Ice, Smb, rname)
     Smb(2)%total = Smb(2)%scale_factor*Smb(2)%total_in - Smb(2)%total_out
 
 
-    if (is_root_pe()) print *,'smb_balance: ',Smb(2)%scale_factor, Smb(2)%total/1.e9, Smb(2)%total_in/1.e9, Smb(2)%total_out/1.e9 , Smb(2)%smb_target/1.e9
+    if (is_root_pe() .and. Ice%verbose_smb) print *,'smb_balance: ',Smb(2)%scale_factor, Smb(2)%total/1.e9, Smb(2)%total_in/1.e9, Smb(2)%total_out/1.e9 , Smb(2)%smb_target/1.e9
 
     return
 
@@ -3055,6 +3084,8 @@ subroutine sfc_mass_in_rescale_factor(Ice, Smb, rname)
             do nc = 0,Ice%sCS%IG%CatIce
               FIA%lprec_top(i,j,nc)=FIA%lprec_top(i,j,nc)*Smb(k)%scale_factor
               FIA%fprec_top(i,j,nc)=FIA%fprec_top(i,j,nc)*Smb(k)%scale_factor
+              if (FIA%evap_top(i,j,nc) .lt. 0.0) &
+                  FIA%evap_top(i,j,nc)=FIA%evap_top(i,j,nc)*Smb(k)%scale_factor
             enddo
             FIA%runoff(i,j)=FIA%runoff(i,j)*Smb(k)%scale_factor
             FIA%runoff_hflx(i,j)=FIA%runoff_hflx(i,j)*Smb(k)%scale_factor

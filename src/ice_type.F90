@@ -162,6 +162,7 @@ type ice_data_type !  ice_public_type
   type(surface_mb_type), dimension(:), pointer :: SMB => NULL() !< A pointer to a structure for
   !! constraining the surface mass fluxes towards
   !! a prior climatological constraint
+  logical :: verbose_smb
 end type ice_data_type !  ice_public_type
 
 contains

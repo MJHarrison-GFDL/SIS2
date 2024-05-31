@@ -21,10 +21,13 @@ use MOM_io,             only : file_exists, close_file, slasher, ensembler
 use MOM_io,             only : open_namelist_file, check_nml_error
 use MOM_time_manager,   only : time_type, time_type_to_real, real_to_time_type
 use MOM_time_manager,   only : operator(+), operator(-), operator(>)
+use MOM_unit_scaling,  only : unit_scale_type
 
 use ice_model_mod,      only : ice_data_type, ice_model_end
 use ice_model_mod,      only : update_ice_slow_thermo, update_ice_dynamics_trans
-use ice_model_mod,      only : unpack_ocn_ice_bdry
+use ice_model_mod,      only : unpack_ocn_ice_bdry, sfc_mass_in_rescale_factor,&
+                               close_sfc_mass_balance, rescale_mass_in, set_ocean_top_fluxes
+use SIS_types,          only : fast_ice_avg_type
 use ocean_model_mod,    only : update_ocean_model, ocean_model_end
 use ocean_model_mod,    only : ocean_public_type, ocean_state_type, ice_ocean_boundary_type
 use ocean_model_mod,    only: ocean_public_type_chksum, ice_ocn_bnd_type_chksum
@@ -171,10 +174,13 @@ subroutine update_slow_ice_and_ocean(CS, Ice, Ocn, Ocean_sfc, IOB, &
   real :: dt_coupling        ! The time step of the thermodynamic update calls [s].
   type(time_type) :: dyn_time_step   ! The length of the dynamic call update calls.
   integer :: ns, nstep
+  type(unit_scale_type),   pointer :: US => NULL()
+  type(fast_ice_avg_type), pointer :: FIA => NULL()
 
   call callTree_enter("update_ice_and_ocean(), combined_ice_ocean_driver.F90")
   dt_coupling = time_type_to_real(coupling_time_step)
-
+  US => Ice%sCS%US
+  FIA=>Ice%sCs%FIA
 !  if (time_start_update /= CS%Time) then
 !    call MOM_error(WARNING, "update_ice_and_ocean: internal clock does not "//&
 !                            "agree with time_start_update argument.")
@@ -203,6 +209,15 @@ subroutine update_slow_ice_and_ocean(CS, Ice, Ocn, Ocean_sfc, IOB, &
   if (.not.same_domain(Ocean_sfc%domain, Ice%slow_Domain_NH)) &
     call MOM_error(FATAL, "update_slow_ice_and_ocean can only be used if the "//&
         "ocean and slow ice layouts and domain sizes are identical.")
+
+  ! Rescale incoming mass fluxes to match a prior constraint.
+  if (Ice%do_smb_adjustment) then
+    call sfc_mass_in_rescale_factor(Ice,Ice%SMB(1),'South')
+    call sfc_mass_in_rescale_factor(Ice,Ice%SMB(3),'North')
+    call close_sfc_mass_balance(Ice, Ice%Smb)
+    call rescale_mass_in(Ice,Ice%Smb)
+  endif
+
 
   if (CS%intersperse_ice_ocn) then
     if (.not.CS%use_intersperse_bug) &

@@ -127,6 +127,7 @@ type surface_mb_type
    logical                         :: read_pmt
    real                            :: smb_target
    real                            :: smb_target_fixed
+   real                            :: smb_factor
    type(external_field)            :: id_target
    real, dimension(:), pointer     :: smb_hist=>NULL()
    real                            :: total
