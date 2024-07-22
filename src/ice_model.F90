@@ -2228,7 +2228,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
        pmt_window = (pmt_window*8.64e4)/time_type_to_real(time_step_slow)
        ipmt_window = max(int(pmt_window),1)
 
-       if (ipmt_window>1) call SIS_error(FATAL,trim(error_header) // ' time filtering ', &
+       if (ipmt_window>1) call SIS_error(FATAL,trim(error_header) // ' time filtering '// &
             ' surface mass fluxes currrently not supported ')
 
        do k=1,3
