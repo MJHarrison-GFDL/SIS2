@@ -141,7 +141,6 @@ integer :: ice_clock_slow, ice_clock_fast, ice_clock_exchange
 integer, parameter :: REDIST=2 !< Redistribute for exchange
 integer, parameter :: DIRECT=3 !< Use direct exchange
 
-real :: pr_max_rescale
 
 contains
 
@@ -1760,7 +1759,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
   type(ice_OBC_type), pointer :: OBC_in => NULL()
   logical :: adjust_smb, read_pmt
   real :: smb_north_lat, smb_south_lat, smb_window, smb_north, smb_south, pmt_window
-  real :: pmt_south, pnt_north
+  real :: pmt_south, pnt_north, smb_max_rescale
   integer :: ipmt_window, outunit
   type(surface_mb_type), dimension(:), pointer :: SMB
 
@@ -2195,7 +2194,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
        call get_param(param_file, mdl, "SMB_SOUTH", smb_south, &
                  "southern SMB.", &
                  units="kg s-1", default=1.e9, scale=1.0)
-       call get_param(param_file, mdl, "SMB_MAX_RESCALE",pr_max_rescale, &
+       call get_param(param_file, mdl, "SMB_MAX_RESCALE",smb_max_rescale, &
                  "Maximum rescaling for precipitation.", &
                  units="none", default=0.25, scale=1.0)
 
@@ -2204,6 +2203,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
          allocate(SMB(k)%mass_in(isc:iec,jsc:jec)); SMB(k)%mass_in(:,:)=0.0
          allocate(SMB(k)%mass_out(isc:iec,jsc:jec)); SMB(k)%mass_out(:,:)=0.0
          allocate(SMB(k)%mask(isc:iec,jsc:jec)); SMB(k)%mask(:,:)=0.0
+         SMB(k)%max_abs_rescale = smb_max_rescale
        enddo
 
        SMB(1)%lat_bounds(1)=-90.
@@ -2227,6 +2227,10 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
 
        pmt_window = (pmt_window*8.64e4)/time_type_to_real(time_step_slow)
        ipmt_window = max(int(pmt_window),1)
+
+       if (ipmt_window>1) call SIS_error(FATAL,trim(error_header) // ' time filtering ', &
+            ' surface mass fluxes currrently not supported ')
+
        do k=1,3
          SMB(k)%total=0.0
          SMB(k)%total_in=0.0
@@ -2863,7 +2867,6 @@ subroutine sfc_mass_in_rescale_factor(Ice, Smb, rname)
     real :: lat1, lat2
     real :: avg, dif, pr_scale
     real :: min_lat, max_lat
-    !real :: pr_max_rescale = 0.75
 
     type(SIS_hor_grid_type), pointer :: G
 
@@ -2903,8 +2906,6 @@ subroutine sfc_mass_in_rescale_factor(Ice, Smb, rname)
     call sum_across_PEs(Smb%total_in)
     Smb%total_out=sum(Smb%mass_out(is:ie,js:je))
     call sum_across_PEs(Smb%total_out)
-    Smb%sum_mask=sum(Smb%mask(is:ie,js:je))
-    call sum_across_PEs(Smb%sum_mask)
     cwlen=0
     do i=1,size(Smb%smb_hist)
       if (Smb%smb_hist(i)==0.0) then
@@ -2926,7 +2927,7 @@ subroutine sfc_mass_in_rescale_factor(Ice, Smb, rname)
     dif = Smb%smb_target - avg
     pr_scale=1.0
     if (Smb%total_in  > 0.) pr_scale = 1.0 + dif/Smb%total_in
-    Smb%scale_factor = max(min(pr_scale,1.0+pr_max_rescale),1.0-pr_max_rescale)
+    Smb%scale_factor = max(min(pr_scale,1.0+SMB%max_abs_rescale),1.0-SMB%max_abs_rescale)
 
     Smb%total = Smb%scale_factor*Smb%total_in - Smb%total_out
 

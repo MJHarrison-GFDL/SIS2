@@ -117,22 +117,24 @@ type land_ice_boundary_type
                          !! REGRID, REDIST or DIRECT and is used by coupler
 end type land_ice_boundary_type
 
+!> A derived type for constraining surface mass balance in (3) regional domains
+!! This is intended for use in global ocean/sea-ice simulations.
 type surface_mb_type
-   real, dimension(:,:),   pointer :: net_mass_in=>NULL() !< surface mass balance array (kg m-2 s-1)
-   real, dimension(:,:),   pointer :: mass_in=>NULL() !< surface mass balance array (kg m-2 s-1)
-   real, dimension(:,:),   pointer :: mass_out=>NULL() !< surface mass balance array (kg m-2 s-1)
+   real, dimension(:,:),   pointer :: net_mass_in=>NULL() !< net surface mass balance array (kg m-2 s-1)
+   real, dimension(:,:),   pointer :: mass_in=>NULL() !< net in surface mass balance array (kg m-2 s-1)
+   real, dimension(:,:),   pointer :: mass_out=>NULL() !< net out surface mass balance array (kg m-2 s-1)
    real, dimension(:,:),   pointer :: mask=>NULL() !< mask (nondim)
-   real, dimension(2)              :: lat_bounds
-   integer                         :: ts_win
-   logical                         :: read_pmt
-   real                            :: smb_target
-   type(external_field)            :: id_target
-   real, dimension(:), pointer     :: smb_hist=>NULL()
-   real                            :: total
-   real                            :: total_in
-   real                            :: total_out
-   real                            :: scale_factor
-   real                            :: sum_mask
+   real, dimension(2)              :: lat_bounds !< latitude boundaries for regional domains
+   integer                         :: ts_win !< number of coupling timesteps to save for averaging (default 1)
+   logical                         :: read_pmt !< logical flag to enable reading time-varying mass balance fields
+   real                            :: smb_target !< target value for regional mass balance
+   type(external_field)            :: id_target !< File handle
+   real, dimension(:), pointer     :: smb_hist=>NULL() !< array containing time history of mass balances
+   real                            :: total !< current mass balance
+   real                            :: total_in !< current total mass in
+   real                            :: total_out !< current total mass out
+   real                            :: scale_factor !< scaling factor for precipitation
+   real                            :: max_abs_rescale !< maximum rescaling factor
 end type surface_mb_type
 
 contains
