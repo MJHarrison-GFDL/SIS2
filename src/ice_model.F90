@@ -2932,8 +2932,8 @@ subroutine sfc_mass_in_rescale_factor(Ice, Smb, rname)
     Smb%total = Smb%scale_factor*Smb%total_in - Smb%total_out
 
 
-    if (is_root_pe()) print *,'update_smb: ',rname, Smb%scale_factor, avg/1.e9, Smb%total/1.e9, Smb%total_in/1.e9,&
-         Smb%total_out/1.e9, Smb%smb_target/1.e9
+    !if (is_root_pe()) print *,'update_smb: ',rname, Smb%scale_factor, avg/1.e9, Smb%total/1.e9, Smb%total_in/1.e9,&
+    !     Smb%total_out/1.e9, Smb%smb_target/1.e9
 
     return
 
@@ -2999,8 +2999,8 @@ subroutine sfc_mass_in_rescale_factor(Ice, Smb, rname)
     Smb(2)%scale_factor=1.0
     if (Smb(2)%total_in  > 0.) then
        pr_scale = 1.0 + dif/Smb(2)%total_in
-    else
-       if (is_root_pe()) print *, 'smb_balance: NEGATIVE MASS_IN',Smb(2)%total_in
+    !else
+    !   if (is_root_pe()) print *, 'smb_balance: NEGATIVE MASS_IN',Smb(2)%total_in
     endif
 
     if (pr_scale>0.) Smb(2)%scale_factor = pr_scale
@@ -3008,7 +3008,7 @@ subroutine sfc_mass_in_rescale_factor(Ice, Smb, rname)
     Smb(2)%total = Smb(2)%scale_factor*Smb(2)%total_in - Smb(2)%total_out
 
 
-    if (is_root_pe()) print *,'smb_balance: ',Smb(2)%scale_factor, Smb(2)%total/1.e9, Smb(2)%total_in/1.e9, Smb(2)%total_out/1.e9 , Smb(2)%smb_target/1.e9
+    !if (is_root_pe()) print *,'smb_balance: ',Smb(2)%scale_factor, Smb(2)%total/1.e9, Smb(2)%total_in/1.e9, Smb(2)%total_out/1.e9 , Smb(2)%smb_target/1.e9
 
     return
 
