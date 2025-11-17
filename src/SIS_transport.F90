@@ -15,6 +15,7 @@ use SIS_continuity,    only : continuity=>ice_continuity, SIS_continuity_CS
 use SIS_continuity,    only : summed_continuity, proportionate_continuity
 use SIS_diag_mediator, only : post_SIS_data, query_SIS_averaging_enabled, SIS_diag_ctrl
 use SIS_diag_mediator, only : register_diag_field=>register_SIS_diag_field, time_type
+use SIS_diag_mediator, only : SIS_diag_send_complete
 use SIS_framework,     only : safe_alloc
 use SIS_hor_grid,      only : SIS_hor_grid_type
 use SIS_tracer_advect, only : advect_tracers_thicker, SIS_tracer_advect_CS
@@ -23,7 +24,7 @@ use SIS_tracer_advect, only : advect_scalar
 use SIS_tracer_registry, only : SIS_tracer_registry_type, get_SIS_tracer_pointer
 use SIS_tracer_registry, only : update_SIS_tracer_halos, set_massless_SIS_tracers
 use SIS_tracer_registry, only : check_SIS_tracer_bounds
-use SIS_types,         only : ice_state_type
+use SIS_types,         only : ice_state_type, ocean_sfc_state_type
 use ice_grid,          only : ice_grid_type
 use ice_ridging_mod,   only : ice_ridging_init, ice_ridging, ice_ridging_CS
 
@@ -46,7 +47,7 @@ type, public :: SIS_transport_CS ; private
                               !! Sensible values are 0 or larger than 1.
   real :: ice_cover_discard   !< A tiny fractional ice coverage which if positive causes the mass
                               !! in categories with less than this coverage to be discarded.
-
+  logical :: mass_neglect_ice_snow_pond !< If true, massless snow and pond values are discarded
   logical :: readjust_categories !< If true, readjust the distribution into
                               !! ice thickness categories after advection.
   logical :: check_conservation !< If true, write out verbose diagnostics of conservation.
@@ -70,6 +71,7 @@ type, public :: SIS_transport_CS ; private
 
   !>@{ Diagnostic IDs
   integer :: id_ix_trans = -1, id_iy_trans = -1, id_xprt = -1, id_rdgr = -1
+  integer :: id_rdgh=-1
   ! integer :: id_rdgo=-1, id_rdgv=-1 ! These do not exist yet
   !!@}
 
@@ -150,6 +152,9 @@ subroutine ice_cat_transport(CAS, TrReg, dt_slow, nsteps, G, US, IG, CS, uc, vc,
   logical :: merged_cont
   character(len=200) :: mesg
   integer :: i, j, k, n, isc, iec, jsc, jec, isd, ied, jsd, jed, nCat
+  logical :: h_neg_fix
+  h_neg_fix=.false.
+  if (CS%mass_neglect_ice_snow_pond) h_neg_fix=.true.
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; nCat = IG%CatIce
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
@@ -191,11 +196,11 @@ subroutine ice_cat_transport(CAS, TrReg, dt_slow, nsteps, G, US, IG, CS, uc, vc,
                                     h3=CAS%m_pond, uh3=uh_pond, vh3=vh_pond)
     else
       call continuity(uc, vc, mca0_ice, CAS%m_ice, uh_ice, vh_ice, dt_adv, &
-                      G, US, IG, CS%continuity_CSp, use_h_neg=.true.)
+                      G, US, IG, CS%continuity_CSp, use_h_neg=.true.)  ! this is hard-coded here to preserve previous answers
       call continuity(uc, vc, mca0_snow, CAS%m_snow, uh_snow, vh_snow, dt_adv, &
-                      G, US, IG, CS%continuity_CSp, masking_uh=uh_ice, masking_vh=vh_ice)
+                      G, US, IG, CS%continuity_CSp, masking_uh=uh_ice, masking_vh=vh_ice, use_h_neg=h_neg_fix)
       call continuity(uc, vc, mca0_pond, CAS%m_pond, uh_pond, vh_pond, dt_adv, &
-                      G, US, IG, CS%continuity_CSp, masking_uh=uh_ice, masking_vh=vh_ice)
+                      G, US, IG, CS%continuity_CSp, masking_uh=uh_ice, masking_vh=vh_ice, use_h_neg=h_neg_fix)
     endif
 
     call advect_scalar(CAS%mH_ice, mca0_ice, CAS%m_ice, uh_ice, vh_ice, &
@@ -218,13 +223,14 @@ subroutine ice_cat_transport(CAS, TrReg, dt_slow, nsteps, G, US, IG, CS, uc, vc,
       write(mesg,'(i4)') n
       call check_SIS_tracer_bounds(TrReg, G, IG, "After advect_SIS_tracers "//trim(mesg))
     endif
+    call SIS_diag_send_complete()
   enddo
 
 end subroutine ice_cat_transport
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> finish_ice_transport completes the ice transport and thickness class redistribution
-subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
+subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, OSS, rdg_rate)
   type(cell_average_state_type),     intent(inout) :: CAS !< A structure with ocean-cell averaged masses.
   type(ice_state_type),              intent(inout) :: IST !< A type describing the state of the sea ice
   type(SIS_hor_grid_type),           intent(inout) :: G   !< The horizontal grid type
@@ -233,6 +239,8 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
   type(SIS_tracer_registry_type),    pointer       :: TrReg !< The registry of SIS ice and snow tracers.
   type(unit_scale_type),             intent(in)    :: US  !< A structure with unit conversion factors
   type(SIS_transport_CS),            pointer       :: CS  !< A pointer to the control structure for this module
+  type(ocean_sfc_state_type), optional, intent(in) :: OSS !< A structure containing the arrays that describe
+                                                          !! the ocean's surface state for the ice model.
   real, dimension(SZI_(G),SZJ_(G)), optional, intent(in) :: rdg_rate !< The ice ridging rate [T-1 ~> s-1].
 
   ! Local variables
@@ -265,7 +273,7 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
   if (CS%do_ridging) then
     ! Compress the ice using the ridging scheme taken from the CICE-Icepack module
     call ice_ridging(IST, G, IG, CAS%m_ice, CAS%m_snow, CAS%m_pond, TrReg, CS%ice_ridging_CSp, US, &
-                     dt, rdg_rate=IST%rdg_rate, rdg_height=IST%rdg_height)
+                     dt, OSS, rdg_rate=IST%rdg_rate, rdg_height=IST%rdg_height)
     ! Clean up any residuals
     call compress_ice(IST%part_size, IST%mH_ice, IST%mH_snow, IST%mH_pond, TrReg, G, US, IG, CS, CAS)
   else
@@ -389,6 +397,8 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
   if (CS%do_ridging) then
     if (CS%id_rdgr>0 .and. present(rdg_rate)) &
       call post_SIS_data(CS%id_rdgr, rdg_rate, CS%diag)
+    if (CS%id_rdgh>0) &
+      call post_SIS_data(CS%id_rdgh, IST%rdg_height, CS%diag)
 !    if (CS%id_rdgo>0) call post_SIS_data(CS%id_rdgo, rdg_open, diag)
 !    if (CS%id_rdgv>0) then
 !      do j=jsc,jec ; do i=isc,iec
@@ -600,9 +610,13 @@ subroutine adjust_ice_categories(mH_ice, mH_snow, mH_pond, part_sz, TrReg, G, IG
       call SIS_error(FATAL, "Input to adjust_ice_categories, negative ice mass.")
     endif
     if (mH_snow(i,j,k) > 0.0) then
+      write(mesg,'("Snow on no ice at: ", 3i6, 1pe12.4)') i+G%idg_offset, j+G%jdg_offset, k, mH_snow(i,j,k)
+      call SIS_error(WARNING, mesg, all_print=.true.)
       call SIS_error(FATAL, "Input to adjust_ice_categories, non-zero snow mass rests atop no ice.")
     endif
     if (mH_pond(i,j,k) > 0.0) then
+      write(mesg,'("Pond on no ice at: ", 3i6, 1pe12.4)') i+G%idg_offset, j+G%jdg_offset, k, mH_pond(i,j,k)
+      call SIS_error(WARNING, mesg, all_print=.true.)
       call SIS_error(FATAL, "Input to adjust_ice_categories, non-zero pond mass rests atop no ice.")
     endif
     if (part_sz(i,j,k) > 0.0) resum_cat(i,j) = .true.
@@ -850,6 +864,7 @@ subroutine compress_ice(part_sz, mH_ice, mH_snow, mH_pond, TrReg, G, US, IG, CS,
   logical :: do_any, do_j(SZJ_(G))
   character(len=200) :: mesg
   integer :: i, j, k, m, isc, iec, jsc, jec, nCat
+
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec
   nCat = IG%CatIce
 
@@ -1163,6 +1178,12 @@ subroutine SIS_transport_init(Time, G, IG, US, param_file, diag, CS, continuity_
 
   ! Read all relevant parameters and write them to the model log.
   call log_version(param_file, mdl, version)
+  call get_param(param_file, mdl, "NEGLECT_MASSLESS_ICE_SNOW_POND", CS%mass_neglect_ice_snow_pond, &
+                 "If True, category ice, snow or pond mass per ocean cell area less than "//&
+                 "CONTINUITY_H_NEGLECT are not transported out of a cell. The default "//&
+                 "value is set to retain previous answers, but new experiments should set "//&
+                 "to True with a suitably small value of CONTINUITY_H_NEGLECT. ", &
+                 default=.false.)
   call get_param(param_file, mdl, "RECATEGORIZE_ICE", CS%readjust_categories, &
                  "If true, readjust the distribution into ice thickness "//&
                  "categories after advection.", default=.true.)
@@ -1241,6 +1262,8 @@ subroutine SIS_transport_init(Time, G, IG, US, param_file, diag, CS, continuity_
                missing_value=missing)
   CS%id_rdgr = register_diag_field('ice_model', 'RDG_RATE', diag%axesT1, Time, &
                'ice ridging rate', '1/sec', conversion=US%s_to_T, missing_value=missing)
+  CS%id_rdgh = register_diag_field('ice_model', 'RDG_HEIGHT', diag%axesTc, Time, &
+               'ice ridge height', 'm', conversion=US%m_to_Z, missing_value=missing)
 !### THESE DIAGNOSTICS DO NOT EXIST YET.
 !  CS%id_rdgo = register_diag_field('ice_model', 'RDG_OPEN', diag%axesT1, Time, &
 !               'rate of opening due to ridging', '1/s', conversion=US%s_to_T, missing_value=missing)
