@@ -74,6 +74,7 @@ type ice_state_type
 
   real, allocatable, dimension(:,:,:) :: &
     mH_pond, &  !< The mass per unit area of the pond in each category [R Z ~> kg m-2].
+    mH_pond_ice, &  !< The mass per unit area of the pond ice in each category [R Z ~> kg m-2].
     mH_snow, &  !< The mass per unit area of the snow in each category [R Z ~> kg m-2].
     mH_ice, &   !< The mass per unit area of the ice in each category [R Z ~> kg m-2].
     t_surf      !< The surface temperature [Kelvin].
@@ -144,7 +145,7 @@ type ocean_sfc_state_type
   logical :: Cgrid_dyn !< If true use a C-grid discretization of the sea-ice dynamics.
 
   !>@{ diagnostic IDs for ocean surface properties
-  integer :: id_sst=-1, id_sss=-1, id_ssh=-1, id_uo=-1, id_vo=-1, id_frazil=-1
+  integer :: id_sst=-1, id_sss=-1, id_ssh=-1, id_uo=-1, id_vo=-1, id_frazil=-1, id_frazilmass=-1
   !!@}
 end type ocean_sfc_state_type
 
@@ -257,7 +258,7 @@ type fast_ice_avg_type
 !SLOW ONLY
   !!@{ Diagnostic IDs
   integer :: id_sh=-1, id_lh=-1, id_sw=-1, id_slp=-1
-  integer :: id_lw=-1, id_snofl=-1, id_rain=-1,  id_evap=-1
+  integer :: id_lw=-1, id_snofl=-1, id_rain=-1,  id_evap=-1, id_evap_i=-1, id_evap_s=-1
   integer :: id_sw_vis_dir=-1, id_sw_vis_dif=-1, id_sw_nir_dir=-1, id_sw_nir_dif=-1
   integer :: id_sw_vis=-1, id_sw_dir=-1, id_sw_dif=-1, id_sw_dn=-1, id_albedo=-1
   integer :: id_runoff=-1, id_calving=-1, id_runoff_hflx=-1, id_calving_hflx=-1
@@ -449,12 +450,13 @@ subroutine alloc_IST_arrays(HI, IG, US, IST, omit_velocities, omit_Tsurf, do_rid
 
   IST%valid_IST = .true.
   allocate(IST%part_size(isd:ied, jsd:jed, 0:CatIce), source=0.0)
-  allocate(IST%mH_pond(  isd:ied, jsd:jed, CatIce), source=0.0)
-  allocate(IST%mH_snow(  isd:ied, jsd:jed, CatIce), source=0.0)
-  allocate(IST%enth_snow(isd:ied, jsd:jed, CatIce, 1), source=0.0)
-  allocate(IST%mH_ice(   isd:ied, jsd:jed, CatIce), source=0.0)
-  allocate(IST%enth_ice( isd:ied, jsd:jed, CatIce, NkIce), source=0.0)
-  allocate(IST%sal_ice(  isd:ied, jsd:jed, CatIce, NkIce), source=0.0)
+  allocate(IST%mH_pond(    isd:ied, jsd:jed, CatIce), source=0.0)
+  allocate(IST%mH_pond_ice(isd:ied, jsd:jed, CatIce), source=0.0)
+  allocate(IST%mH_snow(    isd:ied, jsd:jed, CatIce), source=0.0)
+  allocate(IST%enth_snow(  isd:ied, jsd:jed, CatIce, 1), source=0.0)
+  allocate(IST%mH_ice(     isd:ied, jsd:jed, CatIce), source=0.0)
+  allocate(IST%enth_ice(   isd:ied, jsd:jed, CatIce, NkIce), source=0.0)
+  allocate(IST%sal_ice(    isd:ied, jsd:jed, CatIce, NkIce), source=0.0)
 
   if (present(do_ridging)) then ; if (do_ridging) then
     allocate(IST%snow_to_ocn(isd:ied, jsd:jed), source=0.0)
@@ -499,9 +501,11 @@ subroutine ice_state_register_restarts(IST, G, IG, US, Ice_restart)
     call register_restart_field(Ice_restart, 'part_size', IST%part_size, dim_3='cat0')
     if (allocated(IST%t_surf)) then
       call register_restart_field(Ice_restart, 't_surf_ice', IST%t_surf, &
-                                  mandatory=.false., units="deg K", conversion=US%C_to_degC)
+                                  mandatory=.false., units="Kelvin", conversion=US%C_to_degC)
     endif
     call register_restart_field(Ice_restart, 'h_pond', IST%mH_pond, &
+                                mandatory=.false., units="kg m-2", conversion=US%RZ_to_kg_m2)
+    call register_restart_field(Ice_restart, 'h_pond_ice', IST%mH_pond_ice, &
                                 mandatory=.false., units="kg m-2", conversion=US%RZ_to_kg_m2)
     call register_restart_field(Ice_restart, 'h_snow', IST%mH_snow, &
                                 mandatory=.true., units="kg m-2", conversion=US%RZ_to_kg_m2)
@@ -516,7 +520,7 @@ subroutine ice_state_register_restarts(IST, G, IG, US, Ice_restart)
     call register_restart_field(Ice_restart, 'enth_ice', IST%enth_ice, &
                                 mandatory=.false., units="J kg-1", conversion=US%Q_to_J_kg)
     call register_restart_field(Ice_restart, 'sal_ice', IST%sal_ice, &
-                                mandatory=.false., units="g/kg", conversion=US%S_to_ppt)
+                                mandatory=.false., units="g kg-1", conversion=US%S_to_ppt)
 
     if (allocated(IST%snow_to_ocn)) then
       call register_restart_field(Ice_restart, 'snow_to_ocn', IST%snow_to_ocn, &
@@ -863,7 +867,8 @@ subroutine ice_rad_register_restarts(HI, IG, US, param_file, Rad, Ice_restart)
   call safe_alloc(Rad%coszen_lastrad, isd, ied, jsd, jed)
 
   call register_restart_field(Ice_restart, 'coszen', Rad%coszen_nextrad, mandatory=.false.)
-  call register_restart_field(Ice_restart, 'T_skin', Rad%t_skin, mandatory=.false., conversion=US%C_to_degC)
+  call register_restart_field(Ice_restart, 'T_skin', Rad%t_skin, mandatory=.false., &
+                              units="degC", conversion=US%C_to_degC)
 
 end subroutine ice_rad_register_restarts
 
@@ -1072,6 +1077,7 @@ subroutine copy_IST_to_IST(IST_in, IST_out, HI_in, HI_out, IG)
 
   do k=1,ncat ; do j=jsc,jec ; do i=isc,iec ; i2 = i+i_off ; j2 = j+j_off
     IST_out%mH_pond(i2,j2,k) = IST_in%mH_pond(i,j,k)
+    IST_out%mH_pond_ice(i2,j2,k) = IST_in%mH_pond_ice(i,j,k)
     IST_out%mH_snow(i2,j2,k) = IST_in%mH_snow(i,j,k)
     IST_out%mH_ice(i2,j2,k) = IST_in%mH_ice(i,j,k)
 
@@ -1111,6 +1117,8 @@ subroutine redistribute_IST_to_IST(IST_in, IST_out, domain_in, domain_out)
     endif
     call redistribute_data(domain_in, IST_in%mH_pond, domain_out, &
                            IST_out%mH_pond, complete=.false.)
+    call redistribute_data(domain_in, IST_in%mH_pond_ice, domain_out, &
+                           IST_out%mH_pond_ice, complete=.false.)
     call redistribute_data(domain_in, IST_in%mH_snow, domain_out, &
                            IST_out%mH_snow, complete=.false.)
     call redistribute_data(domain_in, IST_in%mH_ice, domain_out, &
@@ -1134,6 +1142,8 @@ subroutine redistribute_IST_to_IST(IST_in, IST_out, domain_in, domain_out)
     call redistribute_data(domain_in, null_ptr3D, domain_out, &
                            IST_out%mH_pond, complete=.false.)
     call redistribute_data(domain_in, null_ptr3D, domain_out, &
+                           IST_out%mH_pond_ice, complete=.false.)
+    call redistribute_data(domain_in, null_ptr3D, domain_out, &
                            IST_out%mH_snow, complete=.false.)
     call redistribute_data(domain_in, null_ptr3D, domain_out, &
                            IST_out%mH_ice, complete=.false.)
@@ -1154,6 +1164,8 @@ subroutine redistribute_IST_to_IST(IST_in, IST_out, domain_in, domain_out)
                              null_ptr3D, complete=.false.)
     endif
     call redistribute_data(domain_in, IST_in%mH_pond, domain_out, &
+                           null_ptr3D, complete=.false.)
+    call redistribute_data(domain_in, IST_in%mH_pond_ice, domain_out, &
                            null_ptr3D, complete=.false.)
     call redistribute_data(domain_in, IST_in%mH_snow, domain_out, &
                            null_ptr3D, complete=.false.)
@@ -1963,15 +1975,15 @@ subroutine register_fast_to_slow_restarts(FIA, Rad, TSF, mpp_domain, US, Ice_res
   call register_restart_field(Ice_restart, 'flux_sw_top', FIA%flux_sw_top, dim_3="cat0", dim_4="band", &
                               mandatory=.false., units="W m-2", conversion=US%QRZ_T_to_W_m2)
   call register_restart_field(Ice_restart, 'WindStr_x', FIA%WindStr_x, &
-                              mandatory=.false., units="Pa", conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+                              mandatory=.false., units="Pa", conversion=US%RLZ_T2_to_Pa)
   call register_restart_field(Ice_restart, 'WindStr_y', FIA%WindStr_y, &
-                              mandatory=.false., units="Pa", conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+                              mandatory=.false., units="Pa", conversion=US%RLZ_T2_to_Pa)
   call register_restart_field(Ice_restart, 'WindStr_ocn_x', FIA%WindStr_ocn_x, &
-                              mandatory=.false., units="Pa", conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+                              mandatory=.false., units="Pa", conversion=US%RLZ_T2_to_Pa)
   call register_restart_field(Ice_restart, 'WindStr_ocn_y', FIA%WindStr_ocn_y, &
-                              mandatory=.false., units="Pa", conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+                              mandatory=.false., units="Pa", conversion=US%RLZ_T2_to_Pa)
   call register_restart_field(Ice_restart, 'p_atm_surf', FIA%p_atm_surf, &
-                              mandatory=.false., units="Pa", conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+                              mandatory=.false., units="Pa", conversion=US%RLZ_T2_to_Pa)
   call register_restart_field(Ice_restart, 'runoff', FIA%runoff, &
                               mandatory=.false., units="kg m-2 s-1", conversion=US%RZ_T_to_kg_m2s)
   call register_restart_field(Ice_restart, 'calving', FIA%calving, &
@@ -2041,7 +2053,7 @@ subroutine dealloc_IST_arrays(IST)
   type(ice_state_type), intent(inout) :: IST !< A type describing the state of the sea ice
 
   deallocate(IST%part_size, IST%mH_snow, IST%mH_ice)
-  deallocate(IST%mH_pond) ! mw/new
+  deallocate(IST%mH_pond, IST%mH_pond_ice) ! mw/new
   deallocate(IST%enth_snow, IST%enth_ice, IST%sal_ice)
   if (allocated(IST%snow_to_ocn)) deallocate(IST%snow_to_ocn)
   if (allocated(IST%enth_snow_to_ocn)) deallocate(IST%enth_snow_to_ocn)
@@ -2230,12 +2242,12 @@ subroutine IOF_chksum(mesg, IOF, G, US, mech_fluxes, thermo_fluxes)
 
   endif
   if (do_mech) then
-    call hchksum(IOF%flux_u_ocn,      trim(mesg)//" IOF%flux_u_ocn",   G%HI, unscale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-    call hchksum(IOF%flux_v_ocn,      trim(mesg)//" IOF%flux_v_ocn",   G%HI, unscale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-    call hchksum(IOF%pres_ocn_top,    trim(mesg)//" IOF%pres_ocn_top", G%HI, unscale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+    call hchksum(IOF%flux_u_ocn,      trim(mesg)//" IOF%flux_u_ocn",   G%HI, unscale=US%RLZ_T2_to_Pa)
+    call hchksum(IOF%flux_v_ocn,      trim(mesg)//" IOF%flux_v_ocn",   G%HI, unscale=US%RLZ_T2_to_Pa)
+    call hchksum(IOF%pres_ocn_top,    trim(mesg)//" IOF%pres_ocn_top", G%HI, unscale=US%RLZ_T2_to_Pa)
     call hchksum(IOF%mass_ice_sn_p,   trim(mesg)//" IOF%mass_ice_sn_p", G%HI, unscale=US%RZ_to_kg_m2)
     if (allocated(IOF%stress_mag)) &
-      call hchksum(IOF%stress_mag,    trim(mesg)//" IOF%stress_mag", G%HI, unscale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+      call hchksum(IOF%stress_mag,    trim(mesg)//" IOF%stress_mag", G%HI, unscale=US%RLZ_T2_to_Pa)
   endif
 
   if (do_thermo) then
@@ -2291,11 +2303,11 @@ subroutine FIA_chksum(mesg, FIA, G, US, check_ocean)
   call hchksum(FIA%bmelt, trim(mesg)//" FIA%bmelt", G%HI, unscale=US%QRZ_T_to_W_m2*US%T_to_s)
   call hchksum(FIA%sw_abs_ocn, trim(mesg)//" FIA%sw_abs_ocn", G%HI)
 
-  call hchksum(FIA%WindStr_x, trim(mesg)//" FIA%WindStr_x", G%HI, unscale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-  call hchksum(FIA%WindStr_y, trim(mesg)//" FIA%WindStr_y", G%HI, unscale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-  call hchksum(FIA%WindStr_ocn_x, trim(mesg)//" FIA%WindStr_ocn_x", G%HI, unscale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-  call hchksum(FIA%WindStr_ocn_y, trim(mesg)//" FIA%WindStr_ocn_y", G%HI, unscale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-  call hchksum(FIA%p_atm_surf, trim(mesg)//" FIA%p_atm_surf", G%HI, unscale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+  call hchksum(FIA%WindStr_x, trim(mesg)//" FIA%WindStr_x", G%HI, unscale=US%RLZ_T2_to_Pa)
+  call hchksum(FIA%WindStr_y, trim(mesg)//" FIA%WindStr_y", G%HI, unscale=US%RLZ_T2_to_Pa)
+  call hchksum(FIA%WindStr_ocn_x, trim(mesg)//" FIA%WindStr_ocn_x", G%HI, unscale=US%RLZ_T2_to_Pa)
+  call hchksum(FIA%WindStr_ocn_y, trim(mesg)//" FIA%WindStr_ocn_y", G%HI, unscale=US%RLZ_T2_to_Pa)
+  call hchksum(FIA%p_atm_surf, trim(mesg)//" FIA%p_atm_surf", G%HI, unscale=US%RLZ_T2_to_Pa)
   call hchksum(FIA%runoff, trim(mesg)//" FIA%runoff", G%HI, unscale=US%RZ_T_to_kg_m2s)
   call hchksum(FIA%calving, trim(mesg)//" FIA%calving", G%HI, unscale=US%RZ_T_to_kg_m2s)
   call hchksum(FIA%runoff_hflx, trim(mesg)//" FIA%runoff_hflx", G%HI, unscale=US%QRZ_T_to_W_m2)
@@ -2405,6 +2417,7 @@ subroutine IST_chksum(mesg, IST, G, US, IG, haloshift)
   call hchksum(IST%mH_snow, trim(mesg)//" IST%mH_snow", G%HI, haloshift=hs, unscale=US%RZ_to_kg_m2)
   call hchksum(IST%enth_snow(:,:,:,1), trim(mesg)//" IST%enth_snow", G%HI, haloshift=hs, unscale=US%Q_to_J_kg)
   call hchksum(IST%mH_pond, trim(mesg)//" IST%mH_pond", G%HI, haloshift=hs, unscale=US%RZ_to_kg_m2)
+  call hchksum(IST%mH_pond_ice, trim(mesg)//" IST%mH_pond_ice", G%HI, haloshift=hs, unscale=US%RZ_to_kg_m2)
 
   if (allocated(IST%u_ice_B) .and. allocated(IST%v_ice_B)) then
     call Bchksum_pair(mesg//" IST%[uv]_ice_B", IST%u_ice_B, IST%v_ice_B, G, halos=hs, unscale=US%L_T_to_m_s)

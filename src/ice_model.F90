@@ -231,8 +231,8 @@ subroutine update_ice_slow_thermo(Ice)
       !$OMP parallel do default(none) shared(Ice,sG,US,i_off,j_off) private(i2,j2)
       do j=sG%jsc,sG%jec ; do i=sG%isc,sG%iec
         i2 = i+i_off ; j2 = j+j_off
-        Ice%sCS%IOF%flux_u_ocn(i,j) = US%kg_m2s_to_RZ_T*US%m_s_to_L_T*Ice%flux_u(i2,j2)
-        Ice%sCS%IOF%flux_v_ocn(i,j) = US%kg_m2s_to_RZ_T*US%m_s_to_L_T*Ice%flux_v(i2,j2)
+        Ice%sCS%IOF%flux_u_ocn(i,j) = US%Pa_to_RLZ_T2*Ice%flux_u(i2,j2)
+        Ice%sCS%IOF%flux_v_ocn(i,j) = US%Pa_to_RLZ_T2*Ice%flux_v(i2,j2)
       enddo ; enddo
     endif
 
@@ -321,6 +321,7 @@ subroutine update_ice_dynamics_trans(Ice, time_step, start_cycle, end_cycle, cyc
     call pass_var(sIST%part_size, sG%Domain)
     call pass_var(sIST%mH_ice, sG%Domain, complete=.false.)
     call pass_var(sIST%mH_pond, sG%Domain, complete=.false.)
+    call pass_var(sIST%mH_pond_ice, sG%Domain, complete=.false.)
     call pass_var(sIST%mH_snow, sG%Domain, complete=.true.)
   endif
 
@@ -449,15 +450,15 @@ subroutine unpack_ocean_ice_boundary_calved_shelf_bergs(Ice, OIB)
 
   integer :: i, j, k, m, n, i2, j2, k2, isc, iec, jsc, jec, i_off, j_off
 
-  if (.not.associated(Ice%fCS)) call SIS_error(FATAL, &
-      "The pointer to Ice%fCS must be associated in unpack_ocean_ice_boundary_calved_shelf_bergs.")
-  if (.not.associated(Ice%fCS%FIA)) call SIS_error(FATAL, &
-      "The pointer to Ice%fCS%FIA must be associated in unpack_ocean_ice_boundary_calved_shelf_berg.")
-  if (.not.associated(Ice%fCS%G)) call SIS_error(FATAL, &
-      "The pointer to Ice%fCS%G must be associated in unpack_ocean_ice_boundary_calved_shelf_berg.")
+  if (.not.associated(Ice%sCS)) call SIS_error(FATAL, &
+      "The pointer to Ice%sCS must be associated in unpack_ocean_ice_boundary_calved_shelf_bergs.")
+  if (.not.associated(Ice%sCS%FIA)) call SIS_error(FATAL, &
+      "The pointer to Ice%sCS%FIA must be associated in unpack_ocean_ice_boundary_calved_shelf_berg.")
+  if (.not.associated(Ice%sCS%G)) call SIS_error(FATAL, &
+      "The pointer to Ice%sCS%G must be associated in unpack_ocean_ice_boundary_calved_shelf_berg.")
 
-  FIA => Ice%fCS%FIA ; G => Ice%fCS%G
-  US => Ice%fCS%US
+  FIA => Ice%sCS%FIA ; G => Ice%sCS%G
+  US => Ice%sCS%US
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec
 
@@ -467,15 +468,12 @@ subroutine unpack_ocean_ice_boundary_calved_shelf_bergs(Ice, OIB)
   !$OMP                          private(i2,j2)
   do j=jsc,jec ; do i=isc,iec ; if (G%mask2dT(i,j) > 0.0) then
     i2 = i+i_off ; j2 = j+j_off
-    if (OIB%calving(i2,j2)>0.0) then
-      if (FIA%calving(i,j)>0.0) call SIS_error(FATAL,"Overlap in calving from snow discharge and ice shelf!")
-      FIA%calving(i,j) = US%kg_m2s_to_RZ_T*OIB%calving(i2,j2)
-      FIA%calving_hflx(i,j) = US%W_m2_to_QRZ_T*OIB%calving_hflx(i2,j2)
-    endif
+    FIA%calving(i,j) = FIA%calving(i,j) + US%kg_m2s_to_RZ_T*OIB%calving(i2,j2)
+    FIA%calving_hflx(i,j) = FIA%calving_hflx(i,j) + US%W_m2_to_QRZ_T*OIB%calving_hflx(i2,j2)
   endif ; enddo ; enddo
 
-  if (Ice%fCS%debug) then
-    call FIA_chksum("End of unpack_ocean_ice_boundary_calved_shelf_berg", FIA, G, Ice%fCS%US)
+  if (Ice%sCS%debug) then
+    call FIA_chksum("End of unpack_ocean_ice_boundary_calved_shelf_berg", FIA, G, Ice%sCS%US)
   endif
 
 end subroutine unpack_ocean_ice_boundary_calved_shelf_bergs
@@ -639,7 +637,8 @@ subroutine set_ocean_top_fluxes(Ice, IST, IOF, FIA, OSS, G, US, IG, sCS, SMB)
 !  do j=jsc,jec ; do k=1,ncat ; do i=isc,iec
 !    i2 = i+i_off ; j2 = j+j_off! Use these to correct for indexing differences.
 !    Ice%mi(i2,j2) = Ice%mi(i2,j2) + IST%part_size(i,j,k) * &
-!        (G%US%RZ_to_kg_m2 * ((IST%mH_snow(i,j,k) + IST%mH_pond(i,j,k)) + IST%mH_ice(i,j,k)))
+!        (G%US%RZ_to_kg_m2 * ((IST%mH_snow(i,j,k) + IST%mH_pond(i,j,k)) + &
+!         (IST%mH_pond_ice(i,j,k) + IST%mH_ice(i,j,k))))
 !  enddo ; enddo ; enddo
 
   ! This block of code is probably unnecessary.
@@ -675,14 +674,12 @@ subroutine set_ocean_top_fluxes(Ice, IST, IOF, FIA, OSS, G, US, IG, sCS, SMB)
 !   It is possible that the ice mass and surface pressure will be needed after
 ! the thermodynamic step, in which case this should be uncommented.
 !  if (IOF%slp2ocean) then
-!     Ice%p_surf(i2,j2) = US%RZ_T_to_kg_m2s*US%L_T_to_m_s*FIA%p_atm_surf(i,j) - 1e5 ! SLP - 1 std. atmosphere [Pa].
+!     Ice%p_surf(i2,j2) = US%RLZ_T2_to_Pa*FIA%p_atm_surf(i,j) - 1e5 ! SLP - 1 std. atmosphere [Pa].
 !   else
 !     Ice%p_surf(i2,j2) = 0.0
 !   endif
-!   Ice%p_surf(i2,j2) = Ice%p_surf(i2,j2) + US%L_T_to_m_s**2*US%m_to_Z*G%g_Earth*Ice%mi(i2,j2)
-  enddo; enddo
-
-
+!   Ice%p_surf(i2,j2) = Ice%p_surf(i2,j2) + US%L_T2_to_m_s2*US%L_to_Z*G%g_Earth*Ice%mi(i2,j2)
+  enddo ; enddo
   if (allocated(IOF%melt_nudge)) then
     do j=jsc,jec ; do i=isc,iec
       i2 = i+i_off ; j2 = j+j_off! Use these to correct for indexing differences.
@@ -724,7 +721,7 @@ subroutine ice_mass_from_IST(IST, IOF, G, IG)
   !$OMP parallel do default(shared)
   do j=jsc,jec ; do k=1,ncat ; do i=isc,iec
     IOF%mass_ice_sn_p(i,j) = IOF%mass_ice_sn_p(i,j) + IST%part_size(i,j,k) * &
-          ((IST%mH_snow(i,j,k) + IST%mH_pond(i,j,k)) + IST%mH_ice(i,j,k))
+          ((IST%mH_snow(i,j,k) + IST%mH_pond(i,j,k)) + (IST%mH_pond_ice(i,j,k) + IST%mH_ice(i,j,k)))
   enddo ; enddo ; enddo
 
 end subroutine ice_mass_from_IST
@@ -778,21 +775,21 @@ subroutine set_ocean_top_dyn_fluxes(Ice, IOF, FIA, G, US, sCS)
   !$OMP parallel do default(shared) private(i2,j2)
   do j=jsc,jec ; do i=isc,iec
     i2 = i+i_off ; j2 = j+j_off! Use these to correct for indexing differences.
-    Ice%flux_u(i2,j2) = US%RZ_T_to_kg_m2s*US%L_T_to_m_s*IOF%flux_u_ocn(i,j)
-    Ice%flux_v(i2,j2) = US%RZ_T_to_kg_m2s*US%L_T_to_m_s*IOF%flux_v_ocn(i,j)
+    Ice%flux_u(i2,j2) = US%RLZ_T2_to_Pa*IOF%flux_u_ocn(i,j)
+    Ice%flux_v(i2,j2) = US%RLZ_T2_to_Pa*IOF%flux_v_ocn(i,j)
 
     if (IOF%slp2ocean) then
-      Ice%p_surf(i2,j2) = US%RZ_T_to_kg_m2s*US%L_T_to_m_s*FIA%p_atm_surf(i,j) - 1e5 ! SLP - 1 std. atmosphere [Pa].
+      Ice%p_surf(i2,j2) = US%RLZ_T2_to_Pa*FIA%p_atm_surf(i,j) - 1e5 ! SLP - 1 std. atmosphere [Pa].
     else
       Ice%p_surf(i2,j2) = 0.0
     endif
-    Ice%p_surf(i2,j2) = Ice%p_surf(i2,j2) + US%L_T_to_m_s**2*US%m_to_Z*G%g_Earth*Ice%mi(i2,j2)
+    Ice%p_surf(i2,j2) = Ice%p_surf(i2,j2) + US%L_T2_to_m_s2*US%L_to_Z*G%g_Earth*Ice%mi(i2,j2)
   enddo ; enddo
   if (associated(Ice%stress_mag) .and. allocated(IOF%stress_mag)) then
     i_off = LBOUND(Ice%stress_mag,1) - G%isc ; j_off = LBOUND(Ice%stress_mag,2) - G%jsc
     !$OMP parallel do default(shared) private(i2,j2)
     do j=jsc,jec ; do i=isc,iec ; i2 = i+i_off ; j2 = j+j_off
-      Ice%stress_mag(i2,j2) = US%RZ_T_to_kg_m2s*US%L_T_to_m_s*IOF%stress_mag(i,j)
+      Ice%stress_mag(i2,j2) = US%RLZ_T2_to_Pa*IOF%stress_mag(i,j)
     enddo ; enddo
   endif
 
@@ -1334,7 +1331,7 @@ subroutine set_fast_ocean_sfc_properties( Atmos_boundary, Ice, IST, Rad, FIA, &
   do j=jsc,jec ; do i=isc,iec
     i3 = i+io_A ; j3 = j+jo_A
     Rad%coszen_nextrad(i,j) = Atmos_boundary%coszen(i3,j3,1)
-    FIA%p_atm_surf(i,j) = US%kg_m2s_to_RZ_T*US%m_s_to_L_T*Atmos_boundary%p(i3,j3,1)
+    FIA%p_atm_surf(i,j) = US%Pa_to_RLZ_T2*Atmos_boundary%p(i3,j3,1)
     if (Rad%coszen_nextrad(i,j) /= Rad%coszen_lastrad(i,j)) coszen_changed = .true.
   enddo ; enddo
 
@@ -1729,8 +1726,6 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
     str_x, str_y, stress_mag ! Temporary stress arrays
 
   real :: g_Earth        !   The gravitational acceleration [L2 Z-1 T-2 ~> m s-2].
-  real :: ice_bulk_salin ! The globally constant sea ice bulk salinity [S ~> gSalt kg-1] = [S ~> ppt]
-                         ! that is used to calculate the ocean salt flux.
   real :: ice_rel_salin  ! The initial bulk salinity of sea-ice relative to the
                          ! salinity of the water from which it formed [nondim].
   real :: coszen_IC      ! A constant value that is used to initialize
@@ -1792,10 +1787,11 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
   logical :: redo_fast_update ! If true, recalculate the thermal updates from the fast
                               ! dynamics on the slowly evolving ice state, rather than
                               ! copying over the slow ice state to the fast ice state.
-  logical :: do_mask_restart  ! If true, apply the scaling and masks to mH_snow, mH_ice, part_size
-                              ! mH_pond, t_surf, t_skin, sal_ice, enth_ice and enth_snow
-                              ! after a restart. However this may cause answers to diverge
-                              ! after a restart.Provide a switch to turn this option off.
+  logical :: do_mask_restart  ! If true, apply the scaling and masks to mH_snow, mH_ice,
+                              ! part_size, mH_pond, mH_pond_ice, t_surf, t_skin, sal_ice,
+                              ! enth_ice and enth_snow after a restart. However this may
+                              ! cause answers to diverge after a restart. Provide a switch
+                              ! to turn this option off.
   logical :: recategorize_ice ! If true, adjust the distribution of the ice among thickness
                               ! categories after initialization.
   logical :: do_brine_plume   ! If true, keep track of how much salt is left in the ocean
@@ -1903,7 +1899,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
 
   call get_param(param_file, mdl, "G_EARTH", g_Earth, &
                  "The gravitational acceleration of the Earth.", &
-                 units="m s-2", default = 9.80, scale=US%m_s_to_L_T**2*US%Z_to_m)
+                 units="m s-2", default=9.80, scale=US%m_s_to_L_T**2*US%Z_to_m)
 
   call get_param(param_file, mdl, "MOMENTUM_ROUGH_ICE", mom_rough_ice, &
                  "The default momentum roughness length scale for the ocean.", &
@@ -1964,14 +1960,10 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                  "If true, the sea ice is being given wind stresses with "//&
                  "the atmospheric sign convention, and need to have their sign changed.", &
                  default=.true.)
-  call get_param(param_file, mdl, "ICE_BULK_SALINITY", ice_bulk_salin, &
-                 "The fixed bulk salinity of sea ice.", units = "g/kg", &
-                 default=4.0, do_not_log=.true.)
   call get_param(param_file, mdl, "ICE_RELATIVE_SALINITY", ice_rel_salin, &
                  "The initial salinity of sea ice as a fraction of the "//&
                  "salinity of the seawater from which it formed.", &
-                 units = "nondim", default=0.0, do_not_log=.true.)
-  if ((ice_bulk_salin < 0.0) .or. (ice_rel_salin > 0.0)) ice_bulk_salin = 0.0
+                 units="nondim", default=0.0, do_not_log=.true.)
 
   call get_param(param_file, mdl, "APPLY_SLP_TO_OCEAN", slp2ocean, &
                  "If true, apply the atmospheric sea level pressure to the ocean.", &
@@ -2195,9 +2187,9 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
       call SIS_dyn_trans_register_restarts(sHI, sIG, param_file, Ice%sCS%dyn_trans_CSp, US, &
                                            Ice%Ice_restart)
 
-    call SIS_diag_mediator_init(sG, sIG, param_file, Ice%sCS%diag, component="SIS", &
-                                doc_file_dir = dirs%output_directory)
-    call set_SIS_axes_info(sG, sIG, param_file, Ice%sCS%diag)
+    call SIS_diag_mediator_init(sG, sIG, US, param_file, Ice%sCS%diag, component="SIS", &
+                                doc_file_dir=dirs%output_directory)
+    call set_SIS_axes_info(sG, sIG, Ice%sCS%diag)
 
     call ice_thermo_init(param_file, sIST%ITV, US, init_EOS=nudge_sea_ice)
 
@@ -2491,9 +2483,9 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
     endif
 
     allocate(Ice%fCS%diag)
-    call SIS_diag_mediator_init(fG, Ice%fCS%IG, param_file, Ice%fCS%diag, component="SIS_fast", &
-                                doc_file_dir = dirs%output_directory)
-    call set_SIS_axes_info(fG, Ice%fCS%IG, param_file, Ice%fCS%diag, axes_set_name="ice_fast")
+    call SIS_diag_mediator_init(fG, Ice%fCS%IG, US, param_file, Ice%fCS%diag, component="SIS_fast", &
+                                doc_file_dir=dirs%output_directory)
+    call set_SIS_axes_info(fG, Ice%fCS%IG, Ice%fCS%diag, axes_set_name="ice_fast")
 
     if (redo_fast_update .or. .not.single_IST) then
       call ice_thermo_init(param_file, Ice%fCS%IST%ITV, US, init_EOS=nudge_sea_ice)
@@ -2664,6 +2656,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
         sIST%enth_snow(i,j,k,1) = sIST%enth_snow(i,j,k,1) * sG%mask2dT(i,j)
         sIST%mH_ice(i,j,k) = sIST%mH_ice(i,j,k) * sG%mask2dT(i,j)
         sIST%mH_pond(i,j,k) = sIST%mH_pond(i,j,k) * sG%mask2dT(i,j)
+        sIST%mH_pond_ice(i,j,k) = sIST%mH_pond_ice(i,j,k) * sG%mask2dT(i,j)
         sIST%part_size(i,j,k) = sIST%part_size(i,j,k) * sG%mask2dT(i,j)
       enddo ; enddo ; enddo
       ! Since we masked out the part_size on land we should set
@@ -2676,7 +2669,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
     if (recategorize_ice) then
       ! Transfer ice to the correct thickness categories.  This does not change the thicknesses or
       ! other properties where the ice is already in the correct categories.
-      call adjust_ice_categories(sIST%mH_ice, sIST%mH_snow, sIST%mH_pond, sIST%part_size, &
+      call adjust_ice_categories(sIST%mH_ice, sIST%mH_snow, sIST%mH_pond, sIST%mH_pond_ice, sIST%part_size, &
                             sIST%TrReg, sG, sIG, SIS_dyn_trans_transport_CS(Ice%sCS%dyn_trans_CSp))
     endif
 
@@ -2689,6 +2682,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
     call pass_var(sIST%mH_ice, sGD, complete=.false.)
     call pass_var(sIST%mH_snow, sGD, complete=.false.)
     call pass_var(sIST%mH_pond, sGD, complete=.false.)
+    call pass_var(sIST%mH_pond_ice, sGD, complete=.false.)
     do l=1,NkIce
       call pass_var(sIST%enth_ice(:,:,:,l), sGD, complete=.false.)
     enddo

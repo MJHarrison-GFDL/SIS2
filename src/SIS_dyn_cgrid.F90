@@ -207,8 +207,8 @@ subroutine SIS_C_dyn_init(Time, G, US, param_file, diag, CS, ntrunc)
   call get_param(param_file, mdl, "DT_RHEOLOGY", CS%dt_Rheo, &
                  "The sub-cycling time step for iterating the rheology "//&
                  "and ice momentum equations. If DT_RHEOLOGY is negative, "//&
-                 "the time step is set via NSTEPS_DYN.", units="seconds", &
-                 default=-1.0, scale=US%s_to_T)
+                 "the time step is set via NSTEPS_DYN.", &
+                 units="seconds", default=-1.0, scale=US%s_to_T)
   CS%evp_sub_steps = -1
   if (CS%dt_Rheo <= 0.0) &
     call get_param(param_file, mdl, "NSTEPS_DYN", CS%evp_sub_steps, &
@@ -240,7 +240,7 @@ subroutine SIS_C_dyn_init(Time, G, US, param_file, diag, CS, ntrunc)
   call get_param(param_file, mdl, "ICE_STRENGTH_PSTAR", CS%p0, &
                  "A constant in the expression for the ice strength, "//&
                  "P* in Hunke & Dukowicz 1997.", &
-                 units="Pa", default=2.75e4, scale=US%kg_m3_to_R*US%m_s_to_L_T**2)
+                 units="Pa", default=2.75e4, scale=US%Pa_to_RL2_T2)
   call get_param(param_file, mdl, "ICE_STRENGTH_CSTAR", CS%c0, &
                  "A constant in the exponent of the expression for the "//&
                  "ice strength, c* in Hunke & Dukowicz 1997.", &
@@ -277,7 +277,7 @@ subroutine SIS_C_dyn_init(Time, G, US, param_file, diag, CS, ntrunc)
                  "A negligibly small magnitude below which ice stress tensor "//&
                  "components are set to 0.  A reasonable value might be "//&
                  "1e-15 kg m-1 s-1 times vel_underflow.", &
-                 units="Pa m", default=0.0, scale=US%m_s_to_L_T**2*US%kg_m3_to_R*US%m_to_Z)
+                 units="Pa m", default=0.0, scale=US%Pa_to_RL2_T2*US%m_to_Z)
   call get_param(param_file, mdl, "CFL_TRUNCATE", CS%CFL_trunc, &
                  "The value of the CFL number that will cause ice velocity "//&
                  "components to be truncated; instability can occur past 0.5.", &
@@ -393,178 +393,185 @@ subroutine SIS_C_dyn_init(Time, G, US, param_file, diag, CS, ntrunc)
   CS%u_file = -1 ; CS%v_file = -1 ; CS%cols_written = 0
 
   CS%id_sigi  = register_diag_field('ice_model','SIGI' ,diag%axesT1, Time,     &
-            'first stress invariant', 'none', missing_value=missing)
+            'first stress invariant', units='nondim')
   CS%id_sigii = register_diag_field('ice_model','SIGII' ,diag%axesT1, Time,    &
-            'second stress invariant', 'none', missing_value=missing)
+            'second stress invariant', units='nondim')
   CS%id_stren = register_diag_field('ice_model','STRENGTH' ,diag%axesT1, Time, &
-            'ice strength', 'Pa*m', conversion=US%RZ_to_kg_m2*US%L_T_to_m_s**2, missing_value=missing)
+            'ice strength', units='Pa m', conversion=US%RLZ_T2_to_Pa*US%L_to_m)
   CS%id_stren0 = register_diag_field('ice_model','STREN_0' ,diag%axesT1, Time, &
             'ice strength at start of rheology', &
-            'Pa*m', conversion=US%RZ_to_kg_m2*US%L_T_to_m_s**2, missing_value=missing)
+            units='Pa m', conversion=US%RLZ_T2_to_Pa*US%L_to_m)
   CS%id_fix   = register_diag_field('ice_model', 'FI_X', diag%axesCu1, Time,   &
-            'ice internal stress - x component', 'Pa', conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            'ice internal stress - x component', units='Pa', conversion=US%RLZ_T2_to_Pa, &
+            interp_method='none', &
+            cmor_field_name='siforceintstrx', &
+            cmor_standard_name='sea_ice_x_internal_stress', &
+            cmor_long_name='Internal Stress Term in Force Balance (X-Component)')
   CS%id_fiy   = register_diag_field('ice_model', 'FI_Y', diag%axesCv1, Time,   &
-            'ice internal stress - y component', 'Pa', conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            'ice internal stress - y component', units='Pa', conversion=US%RLZ_T2_to_Pa, &
+            interp_method='none', &
+            cmor_field_name='siforceintstry', &
+            cmor_standard_name='sea_ice_y_internal_stress', &
+            cmor_long_name='Internal Stress Term in Force Balance (Y-Component)')
   CS%id_fcx   = register_diag_field('ice_model', 'FC_X', diag%axesCu1, Time,   &
-            'Coriolis force - x component', 'Pa', conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            'Coriolis force - x component', units='Pa', conversion=US%RLZ_T2_to_Pa, &
+            interp_method='none', &
+            cmor_field_name='siforcecoriolx', &
+            cmor_standard_name='sea_ice_x_force_per_unit_area_due_to_coriolis_effect', &
+            cmor_long_name='Coriolis Force Term in Force Balance (X-Component)')
   CS%id_fcy   = register_diag_field('ice_model', 'FC_Y', diag%axesCv1, Time,   &
-            'Coriolis force - y component', 'Pa', conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            'Coriolis force - y component', units='Pa', conversion=US%RLZ_T2_to_Pa, &
+            interp_method='none', &
+            cmor_field_name='siforcecorioly', &
+            cmor_standard_name='sea_ice_y_force_per_unit_area_due_to_coriolis_effect', &
+            cmor_long_name='Coriolis Force Term in Force Balance (Y-Component)')
   CS%id_Coru   = register_diag_field('ice_model', 'Cor_ui', diag%axesCu1, Time,&
             'Coriolis ice acceleration - x component', &
-            'm s-2', conversion=US%L_T_to_m_s*US%s_to_T, &
-            missing_value=missing, interp_method='none')
+            units='m s-2', conversion=US%L_T2_to_m_s2, interp_method='none')
   CS%id_Corv   = register_diag_field('ice_model', 'Cor_vi', diag%axesCv1, Time,&
             'Coriolis ice acceleration - y component', &
-            'm s-2', conversion=US%L_T_to_m_s*US%s_to_T, &
-            missing_value=missing, interp_method='none')
+            units='m s-2', conversion=US%L_T2_to_m_s2, interp_method='none')
   CS%id_fpx   = register_diag_field('ice_model', 'FP_X', diag%axesCu1, Time,   &
             'Pressure force - x component', &
-            'Pa',  conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            units='Pa', conversion=US%RLZ_T2_to_Pa, interp_method='none', &
+            cmor_field_name='siforcetiltx', &
+            cmor_standard_name='sea_ice_x_force_per_unit_area_due_to_sea_surface_tilt', &
+            cmor_long_name='Sea-Surface Tilt Term in Force Balance (X-Component)')
   CS%id_fpy   = register_diag_field('ice_model', 'FP_Y', diag%axesCv1, Time,   &
             'Pressure force - y component', &
-            'Pa',  conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            units='Pa', conversion=US%RLZ_T2_to_Pa, interp_method='none', &
+            cmor_field_name='siforcetilty', &
+            cmor_standard_name='sea_ice_y_force_per_unit_area_due_to_sea_surface_tilt', &
+            cmor_long_name='Sea-Surface Tilt Term in Force Balance (Y-Component)')
   CS%id_PFu   = register_diag_field('ice_model', 'Pfa_ui', diag%axesCu1, Time, &
             'Pressure-force ice acceleration - x component', &
-            'm s-2',  conversion=US%L_T_to_m_s*US%s_to_T, &
-            missing_value=missing, interp_method='none')
+            units='m s-2',  conversion=US%L_T2_to_m_s2, interp_method='none')
   CS%id_PFv   = register_diag_field('ice_model', 'Pfa_vi', diag%axesCv1, Time, &
             'Pressure-force ice acceleration - y component', &
-            'm s-2',  conversion=US%L_T_to_m_s*US%s_to_T, &
-            missing_value=missing,  interp_method='none')
+            units='m s-2',  conversion=US%L_T2_to_m_s2, interp_method='none')
   CS%id_fwx   = register_diag_field('ice_model', 'FW_X', diag%axesCu1, Time,   &
             'water stress on ice - x component', &
-            'Pa',  conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            units='Pa', conversion=US%RLZ_T2_to_Pa, interp_method='none', &
+            cmor_field_name='sistrxubot', &
+            cmor_standard_name='upward_x_stress_at_sea_ice_base', &
+            cmor_long_name='X-Component of Ocean Stress on Sea Ice')
   CS%id_fwy   = register_diag_field('ice_model', 'FW_Y', diag%axesCv1, Time,   &
             'water stress on ice - y component', &
-            'Pa',  conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            units='Pa', conversion=US%RLZ_T2_to_Pa, interp_method='none', &
+            cmor_field_name='sistryubot', &
+            cmor_standard_name='upward_y_stress_at_sea_ice_base', &
+            cmor_long_name='Y-Component of Ocean Stress on Sea Ice')
   CS%id_flfx  = register_diag_field('ice_model', 'FLF_X', diag%axesCu1, Time,   &
             'land-fast bottom stress on ice - x component', &
-            'Pa',  conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            units='Pa', conversion=US%RLZ_T2_to_Pa, interp_method='none')
   CS%id_flfy  = register_diag_field('ice_model', 'FLF_Y', diag%axesCv1, Time,   &
             'land-fast bottom stress on ice - y component', &
-            'Pa',  conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            units='Pa', conversion=US%RLZ_T2_to_Pa, interp_method='none')
   CS%id_ui    = register_diag_field('ice_model', 'UI', diag%axesCu1, Time,     &
-            'ice velocity - x component', 'm/s', missing_value=missing,        &
-            interp_method='none', conversion=US%L_T_to_m_s)
+            'ice velocity - x component', units='m s-1', conversion=US%L_T_to_m_s, &
+            interp_method='none')
   CS%id_vi    = register_diag_field('ice_model', 'VI', diag%axesCv1, Time,     &
-            'ice velocity - y component', 'm/s', missing_value=missing,        &
-            interp_method='none', conversion=US%L_T_to_m_s)
+            'ice velocity - y component', units='m s-1', conversion=US%L_T_to_m_s, &
+            interp_method='none')
   CS%id_ui_east    = register_diag_field('ice_model', 'ui_east', diag%axesT1, Time,     &
-            'ice velocity - east component', 'm/s', missing_value=missing,        &
-            interp_method='none', conversion=US%L_T_to_m_s)
+            'ice velocity - east component', units='m s-1', conversion=US%L_T_to_m_s, &
+            interp_method='none')
   CS%id_vi_north    = register_diag_field('ice_model', 'vi_north', diag%axesT1, Time,     &
-            'ice velocity - north component', 'm/s', missing_value=missing,        &
-            interp_method='none', conversion=US%L_T_to_m_s)
+            'ice velocity - north component', units='m s-1', conversion=US%L_T_to_m_s, &
+            interp_method='none')
   CS%id_mis  = register_diag_field('ice_model', 'MIS_tot', diag%axesT1, Time,  &
-            'Mass of ice and snow at t-points', 'kg m-2', conversion=US%RZ_to_kg_m2, missing_value=missing)
+            'Mass of ice and snow at t-points', units='kg m-2', conversion=US%RZ_to_kg_m2)
   CS%id_ci0  = register_diag_field('ice_model', 'CI_tot', diag%axesT1, Time,   &
-            'Initial summed concentration of ice at t-points', 'nondim',       &
-            missing_value=missing)
+            'Initial summed concentration of ice at t-points', units='nondim')
   CS%id_ci  = register_diag_field('ice_model', 'CI_proj', diag%axesT1, Time,   &
-            'Projected summed concentration of ice at t-points', 'nondim',     &
-            missing_value=missing)
+            'Projected summed concentration of ice at t-points', units='nondim')
   CS%id_miu = register_diag_field('ice_model', 'MI_U', diag%axesCu1, Time,   &
-            'Mass of ice and snow at u-points', 'kg m-2', conversion=US%RZ_to_kg_m2, &
-            missing_value=missing, interp_method='none')
+            'Mass of ice and snow at u-points', units='kg m-2', conversion=US%RZ_to_kg_m2, &
+            interp_method='none')
   CS%id_miv = register_diag_field('ice_model', 'MI_V', diag%axesCv1, Time,   &
-            'Mass of ice and snow at v-points', 'kg m-2', conversion=US%RZ_to_kg_m2, &
-            missing_value=missing, interp_method='none')
+            'Mass of ice and snow at v-points', units='kg m-2', conversion=US%RZ_to_kg_m2, &
+            interp_method='none')
 
   CS%id_fix_d   = register_diag_field('ice_model', 'FI_d_X', diag%axesCu1, Time,         &
             'ice divergence internal stress - x component', &
-            'Pa',  conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            units='Pa', conversion=US%RLZ_T2_to_Pa, interp_method='none')
   CS%id_fiy_d   = register_diag_field('ice_model', 'FI_d_Y', diag%axesCv1, Time,         &
             'ice divergence internal stress - y component', &
-            'Pa',  conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            units='Pa', conversion=US%RLZ_T2_to_Pa, interp_method='none')
   CS%id_fix_t   = register_diag_field('ice_model', 'FI_t_X', diag%axesCu1, Time,        &
             'ice tension internal stress - x component', &
-            'Pa',  conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            units='Pa', conversion=US%RLZ_T2_to_Pa, interp_method='none')
   CS%id_fiy_t   = register_diag_field('ice_model', 'FI_t_Y', diag%axesCv1, Time,        &
             'ice tension internal stress - y component', &
-            'Pa',  conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            units='Pa', conversion=US%RLZ_T2_to_Pa, interp_method='none')
   CS%id_fix_s   = register_diag_field('ice_model', 'FI_s_X', diag%axesCu1, Time,        &
             'ice shearing internal stress - x component', &
-            'Pa',  conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            units='Pa', conversion=US%RLZ_T2_to_Pa, interp_method='none')
   CS%id_fiy_s   = register_diag_field('ice_model', 'FI_s_Y', diag%axesCv1, Time,        &
             'ice shearing internal stress - y component', &
-            'Pa',  conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s, &
-            missing_value=missing, interp_method='none')
+            units='Pa', conversion=US%RLZ_T2_to_Pa, interp_method='none')
 
   CS%id_str_d   = register_diag_field('ice_model', 'str_d', diag%axesT1, Time, &
-            'ice divergence internal stress', 'Pa m', conversion=US%RZ_to_kg_m2*US%L_T_to_m_s**2, &
-            missing_value=missing)
+            'ice divergence internal stress', units='Pa m', conversion=US%RLZ_T2_to_Pa*US%L_to_m)
   CS%id_str_t   = register_diag_field('ice_model', 'str_t', diag%axesT1, Time, &
-            'ice tension internal stress', 'Pa m', conversion=US%RZ_to_kg_m2*US%L_T_to_m_s**2, &
-            missing_value=missing)
+            'ice tension internal stress', units='Pa m', conversion=US%RLZ_T2_to_Pa*US%L_to_m)
   CS%id_str_s   = register_diag_field('ice_model', 'str_s', diag%axesB1, Time, &
-            'ice shearing internal stress', 'Pa m', conversion=US%RZ_to_kg_m2*US%L_T_to_m_s**2, &
-            missing_value=missing)
+            'ice shearing internal stress', units='Pa m', conversion=US%RLZ_T2_to_Pa*US%L_to_m)
   CS%id_sh_d   = register_diag_field('ice_model', 'sh_d', diag%axesT1, Time,   &
-            'ice divergence strain rate', 's-1', conversion=US%s_to_T, missing_value=missing)
+            'ice divergence strain rate', units='s-1', conversion=US%s_to_T)
   CS%id_sh_t   = register_diag_field('ice_model', 'sh_t', diag%axesT1, Time,   &
-            'ice tension strain rate', 's-1', conversion=US%s_to_T, missing_value=missing)
+            'ice tension strain rate', units='s-1', conversion=US%s_to_T)
   CS%id_sh_s   = register_diag_field('ice_model', 'sh_s', diag%axesB1, Time,   &
-            'ice shearing strain rate', 's-1', conversion=US%s_to_T, missing_value=missing)
+            'ice shearing strain rate', units='s-1', conversion=US%s_to_T)
   CS%id_del_sh = register_diag_field('ice_model', 'del_sh', diag%axesT1, Time, &
-            'ice strain rate magnitude', 's-1', conversion=US%s_to_T, missing_value=missing)
+            'ice strain rate magnitude', units='s-1', conversion=US%s_to_T)
   CS%id_del_sh_min = register_diag_field('ice_model', 'del_sh_min', diag%axesT1, Time, &
-            'minimum ice strain rate magnitude', 's-1', conversion=US%s_to_T, missing_value=missing)
+            'minimum ice strain rate magnitude', units='s-1', conversion=US%s_to_T)
   CS%id_itheta = register_diag_field('ice_model', 'itheta', diag%axesT1, Time, &
-            'ice atan(shear/divergence)', 'rad', missing_value=missing)
+            'ice atan(shear/divergence)', units='radians')
 
   CS%id_ui_hifreq = register_diag_field('ice_model', 'ui_hf', diag%axesCu1, Time, &
-            'ice velocity - x component', 'm/s', missing_value=missing,        &
-            interp_method='none', conversion=US%L_T_to_m_s)
+            'ice velocity - x component', units='m s-1', conversion=US%L_T_to_m_s, interp_method='none')
   CS%id_vi_hifreq = register_diag_field('ice_model', 'vi_hf', diag%axesCv1, Time, &
-            'ice velocity - y component', 'm/s', missing_value=missing,        &
-            interp_method='none, conversion=US%L_T_to_m_s')
+            'ice velocity - y component', units='m s-1', conversion=US%L_T_to_m_s, interp_method='none')
   CS%id_str_d_hifreq = register_diag_field('ice_model', 'str_d_hf', diag%axesT1, Time, &
-            'ice divergence internal stress', 'Pa m', conversion=US%RZ_to_kg_m2*US%L_T_to_m_s**2, &
-            missing_value=missing)
+            'ice divergence internal stress', units='Pa m', conversion=US%RLZ_T2_to_Pa*US%L_to_m)
   CS%id_str_t_hifreq = register_diag_field('ice_model', 'str_t_hf', diag%axesT1, Time, &
-            'ice tension internal stress', 'Pa m', conversion=US%RZ_to_kg_m2*US%L_T_to_m_s**2, &
-            missing_value=missing)
+            'ice tension internal stress', units='Pa m', conversion=US%RLZ_T2_to_Pa*US%L_to_m)
   CS%id_str_s_hifreq = register_diag_field('ice_model', 'str_s_hf', diag%axesB1, Time, &
-            'ice shearing internal stress', 'Pa m', conversion=US%RZ_to_kg_m2*US%L_T_to_m_s**2, &
-            missing_value=missing)
+            'ice shearing internal stress', units='Pa m', conversion=US%RLZ_T2_to_Pa*US%L_to_m)
   CS%id_sh_d_hifreq = register_diag_field('ice_model', 'sh_d_hf', diag%axesT1, Time, &
-            'ice divergence rate', 's-1', conversion=US%s_to_T, missing_value=missing)
+            'ice divergence rate', units='s-1', conversion=US%s_to_T)
   CS%id_sh_t_hifreq = register_diag_field('ice_model', 'sh_t_hf', diag%axesT1, Time, &
-            'ice tension rate', 's-1', conversion=US%s_to_T, missing_value=missing)
+            'ice tension rate', units='s-1', conversion=US%s_to_T)
   CS%id_sh_s_hifreq = register_diag_field('ice_model', 'sh_s_hf', diag%axesB1, Time, &
-            'ice shearing rate', 's-1', conversion=US%s_to_T, missing_value=missing)
-  CS%id_sigi_hifreq  = register_diag_field('ice_model','sigI_hf' ,diag%axesT1, Time, &
-            'first stress invariant', 'none', missing_value=missing)
-  CS%id_sigii_hifreq = register_diag_field('ice_model','sigII_hf' ,diag%axesT1, Time, &
-            'second stress invariant', 'none', missing_value=missing)
+            'ice shearing rate', units='s-1', conversion=US%s_to_T)
+  CS%id_sigi_hifreq  = register_diag_field('ice_model', 'sigI_hf', diag%axesT1, Time, &
+            'first stress invariant', units='nondim', &
+            cmor_field_name='sistressave', &
+            cmor_standard_name='sea_ice_average_normal_horizontal_stress', &
+            cmor_long_name='Average Normal Stress in Sea Ice')
+  CS%id_sigii_hifreq = register_diag_field('ice_model', 'sigII_hf', diag%axesT1, Time, &
+            'second stress invariant', units='nondim', &
+            cmor_field_name='sistressmax', &
+            cmor_standard_name='maximum_over_coordinate_rotation_of_sea_ice_horizontal_shear_stress', &
+            cmor_long_name='Maximum Shear Stress in Sea Ice')
   CS%id_ci_hifreq  = register_diag_field('ice_model', 'CI_hf', diag%axesT1, Time, &
-            'Summed concentration of ice at t-points', 'nondim', missing_value=missing)
+            'Summed concentration of ice at t-points', units='nondim')
   CS%id_stren_hifreq = register_diag_field('ice_model','STRENGTH_hf' ,diag%axesT1, Time, &
-            'ice strength', 'Pa*m', conversion=US%RZ_to_kg_m2*US%L_T_to_m_s**2, missing_value=missing)
+            'ice strength', units='Pa m', conversion=US%RLZ_T2_to_Pa*US%L_to_m, &
+            cmor_field_name='sicompstren', &
+            cmor_standard_name='compressive_strength_of_sea_ice', &
+            cmor_long_name='Compressive Sea Ice Strength')
 
   CS%id_siu = register_diag_field('ice_model', 'siu', diag%axesT1, Time, &
-            'ice velocity - x component', 'm/s', missing_value=missing,  &
-            interp_method='none', conversion=US%L_T_to_m_s)
+            'ice velocity - x component', units='m s-1', conversion=US%L_T_to_m_s, &
+            interp_method='none')
   CS%id_siv = register_diag_field('ice_model', 'siv', diag%axesT1, Time, &
-            'ice velocity - y component', 'm/s', missing_value=missing,  &
-            interp_method='none', conversion=US%L_T_to_m_s)
+           'ice velocity - y component', units='m s-1', conversion=US%L_T_to_m_s, &
+            interp_method='none')
   CS%id_sispeed = register_diag_field('ice_model', 'sispeed', diag%axesT1, Time, &
-            'ice speed', 'm/s', missing_value=missing, conversion=US%L_T_to_m_s)
+            'ice speed', units='m s-1', conversion=US%L_T_to_m_s)
 
 end subroutine SIS_C_dyn_init
 
@@ -1005,8 +1012,8 @@ subroutine SIS_C_dynamics(ci, mis, mice, ui, vi, uo, vo, fxat, fyat, &
 !$OMP end parallel
 
   if (CS%debug .or. CS%debug_redundant) then
-    call uvchksum("PF[uv] in SIS_C_dynamics", PFu, PFv, G, unscale=US%L_T_to_m_s*US%s_to_T)
-    call uvchksum("f[xy]at in SIS_C_dynamics", fxat, fyat, G, unscale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+    call uvchksum("PF[uv] in SIS_C_dynamics", PFu, PFv, G, unscale=US%L_T2_to_m_s2)
+    call uvchksum("f[xy]at in SIS_C_dynamics", fxat, fyat, G, unscale=US%RLZ_T2_to_Pa)
     call uvchksum("[uv]i pre-steps SIS_C_dynamics", ui, vi, G, unscale=US%L_T_to_m_s)
     call uvchksum("[uv]o in SIS_C_dynamics", uo, vo, G, unscale=US%L_T_to_m_s)
   endif
@@ -1381,16 +1388,16 @@ subroutine SIS_C_dynamics(ci, mis, mice, ui, vi, uo, vo, fxat, fyat, &
     endif
 
     if (CS%debug_EVP .and. CS%debug) then
-      call hchksum(CS%str_d, "str_d in SIS_C_dynamics", G%HI, haloshift=1, unscale=US%RZ_to_kg_m2*US%L_T_to_m_s**2)
-      call hchksum(CS%str_t, "str_t in SIS_C_dynamics", G%HI, haloshift=1, unscale=US%RZ_to_kg_m2*US%L_T_to_m_s**2)
+      call hchksum(CS%str_d, "str_d in SIS_C_dynamics", G%HI, haloshift=1, unscale=US%RLZ_T2_to_Pa*US%L_to_m)
+      call hchksum(CS%str_t, "str_t in SIS_C_dynamics", G%HI, haloshift=1, unscale=US%RLZ_T2_to_Pa*US%L_to_m)
       call Bchksum(CS%str_s, "str_s in SIS_C_dynamics", G%HI, &
-                   haloshift=0, symmetric=.true., unscale=US%RZ_to_kg_m2*US%L_T_to_m_s**2)
+                   haloshift=0, symmetric=.true., unscale=US%RLZ_T2_to_Pa*US%L_to_m)
     endif
     if (CS%debug_EVP .and. (CS%debug .or. CS%debug_redundant)) then
-      call uvchksum("f[xy]ic in SIS_C_dynamics", fxic, fyic, G, unscale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-      call uvchksum("f[xy]oc in SIS_C_dynamics", fxoc, fyoc, G, unscale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-      call uvchksum("f[xy]lf in SIS_C_dynamics", fxlf, fylf, G, unscale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-      call uvchksum("Cor_[uv] in SIS_C_dynamics", Cor_u, Cor_v, G, unscale=US%L_T_to_m_s*US%s_to_T)
+      call uvchksum("f[xy]ic in SIS_C_dynamics", fxic, fyic, G, unscale=US%RLZ_T2_to_Pa)
+      call uvchksum("f[xy]oc in SIS_C_dynamics", fxoc, fyoc, G, unscale=US%RLZ_T2_to_Pa)
+      call uvchksum("f[xy]lf in SIS_C_dynamics", fxlf, fylf, G, unscale=US%RLZ_T2_to_Pa)
+      call uvchksum("Cor_[uv] in SIS_C_dynamics", Cor_u, Cor_v, G, unscale=US%L_T2_to_m_s2)
       call uvchksum("[uv]i in SIS_C_dynamics", ui, vi, G, unscale=US%L_T_to_m_s)
     endif
     call SIS_diag_send_complete()
@@ -1883,7 +1890,7 @@ subroutine basal_stress_coeff_C(G, mi, ci, sea_lev, CS)
     enddo
   enddo
 !          call uvchksum("Tb_[uv] before SIS_C_dynamics", CS%Tb_u, CS%Tb_v, G, &
-!                         halos=1, unscale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+!                         halos=1, unscale=US%RLZ_T2_to_Pa)
 
 end subroutine basal_stress_coeff_C
 
@@ -2097,15 +2104,15 @@ subroutine SIS_C_dyn_register_restarts(HI, param_file, CS, US, Ice_restart)
 
   if (associated(Ice_restart)) then
     call register_restart_field(Ice_restart, 'str_d', CS%str_d, mandatory=.false., &
-                                units="Pa m", conversion=US%RZ_to_kg_m2*US%L_T_to_m_s**2)
+                                units="Pa m", conversion=US%RLZ_T2_to_Pa*US%L_to_m)
     call register_restart_field(Ice_restart, 'str_t', CS%str_t, mandatory=.false., &
-                                units="Pa m", conversion=US%RZ_to_kg_m2*US%L_T_to_m_s**2)
+                                units="Pa m", conversion=US%RLZ_T2_to_Pa*US%L_to_m)
     if (HI%symmetric) then
       call register_restart_field(Ice_restart, 'sym_str_s', CS%str_s, position=CORNER, mandatory=.false., &
-                                  units="Pa m", conversion=US%RZ_to_kg_m2*US%L_T_to_m_s**2)
+                                  units="Pa m", conversion=US%RLZ_T2_to_Pa*US%L_to_m)
     else
       call register_restart_field(Ice_restart, 'str_s', CS%str_s, position=CORNER, mandatory=.false., &
-                                  units="Pa m", conversion=US%RZ_to_kg_m2*US%L_T_to_m_s**2)
+                                  units="Pa m", conversion=US%RLZ_T2_to_Pa*US%L_to_m)
     endif
   endif
 end subroutine SIS_C_dyn_register_restarts
@@ -2210,11 +2217,11 @@ subroutine write_u_trunc(I, j, ui, u_IC, uo, mis, fxoc, fxic, Cor_u, PFu, fxat, 
     CS%cols_written = CS%cols_written + 1
 
   ! Open up the file for output if this is the first call.
-    if (CS%u_file < 0) then
+    if (CS%u_file == -1) then
       if (len_trim(CS%u_trunc_file) < 1) return
       call open_ASCII_file(CS%u_file, trim(CS%u_trunc_file), &
           action=APPEND_FILE)
-      if (CS%u_file < 0) then
+      if (CS%u_file == -1) then
         call SIS_error(NOTE, 'Unable to open file '//trim(CS%u_trunc_file)//'.')
         return
       endif
@@ -2286,11 +2293,11 @@ subroutine write_v_trunc(i, J, vi, v_IC, vo, mis, fyoc, fyic, Cor_v, PFv, fyat, 
     CS%cols_written = CS%cols_written + 1
 
   ! Open up the file for output if this is the first call.
-    if (CS%v_file < 0) then
+    if (CS%v_file == -1) then
       if (len_trim(CS%v_trunc_file) < 1) return
       call open_ASCII_file(CS%v_file, trim(CS%v_trunc_file), &
           action=APPEND_FILE)
-      if (CS%v_file < 0) then
+      if (CS%v_file == -1) then
         call SIS_error(NOTE, 'Unable to open file '//trim(CS%v_trunc_file)//'.')
         return
       endif

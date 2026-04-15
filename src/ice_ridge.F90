@@ -52,10 +52,10 @@ type, public :: ice_ridging_CS ; private
                               !! rebin for us.
   real :: mu_rdg = 3.0 !< e-folding scale of ridged ice, new_rdg_partic (m^0.5)
   real :: area_underflow = 0.0 !< a non-dimesional fractional area underflow limit for the sea-ice
-                               !! ridging scheme. This is defaulted to zero, but a reasonable
+                               !! ridging scheme [nondim]. This is defaulted to zero, but a reasonable
                                !! value might be 10^-26 which for a km square grid cell
                                !! would equate to an Angstrom scale ice patch.
-  real :: Cs_frac = 0.25       !< fraction of shear energy contrbtng to ridging
+  real :: Cs_frac = 0.25       !< fraction of shear energy contributing to ridging [nondim]
 end type ice_ridging_CS
 
 contains
@@ -89,7 +89,7 @@ subroutine ice_ridging_init(G, IG, PF, CS, US)
     call get_param(PF, mdl, "RIDGE_AREA_UNDERFLOW", CS%area_underflow, &
                    "A fractional area limit below which ice fraction is set to zero "//&
                    "A reasonable default value for a km scale grid cell is 10^-24.",&
-                   units="none", default=0.0)
+                   units="nondim", default=0.0)
   endif
   call get_param(PF, mdl, "ICEPACK_CLEANUP", CS%do_cleanup, &
                  "Tell icepack_step_ridge to call itd_cleanup for us.", default=.false.)
@@ -276,13 +276,13 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, CS, US, d
   call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water)
   dt_sec = dt*US%T_to_s
 
-  call icepack_query_tracer_sizes(ncat_out=ncat_out,ntrcr_out=ntrcr_out, nilyr_out=nilyr_out, nslyr_out=nslyr_out)
+  call icepack_query_tracer_sizes(ncat_out=ncat_out, ntrcr_out=ntrcr_out, nilyr_out=nilyr_out, nslyr_out=nslyr_out)
 
   if (nIlyr .ne. nilyr_out .or. nSlyr .ne. nslyr_out ) &
-    call SIS_error(FATAL,"Oops!! It looks like you are trying to use sea-ice ridging "//&
-                         "but did not include the Icepack (https://github.com/CICE-Consortium/Icepack)"//&
-                         "source code repository in your compilation procedure, and are instead using the default "//&
-                         "stub routine contained in config_src/external. Adjust your compilation accordingly." )
+    call SIS_error(FATAL, "Oops!! It looks like you are trying to use sea-ice ridging "//&
+                          "but did not include the Icepack (https://github.com/CICE-Consortium/Icepack)"//&
+                          "source code repository in your compilation procedure, and are instead using the default "//&
+                          "stub routine contained in config_src/external. Adjust your compilation accordingly." )
 
   ! copy strain calculation code from SIS_C_dynamics; might be a more elegant way ...
   !
@@ -305,20 +305,20 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, CS, US, d
   ! is thinner than hin_max(ncat).
   hin_max(nCat) = big
 
-  trcr_base = 0.0; n_trcr_strata = 0; nt_strata = 0; ! init some tracer vars
+  trcr_base = 0.0; n_trcr_strata = 0; nt_strata = 0 ! init some tracer vars
   ! When would we use icepack tracer "strata"?
 
   ! set icepack tracer index "nt_lvl" to (last) pond tracer so it gets dumped when
   ! ridging in ridge_ice (this is what happens to "level" ponds); first add up ntrcr;
   ! then set nt_lvl to ntrcr+1; could move this to an initializer - mw
 
-  call get_SIS_tracer_pointer("enth_ice",TrReg,Tr_ice_enth_ptr,nL_ice)
-  call get_SIS_tracer_pointer("enth_snow",TrReg,Tr_snow_enth_ptr,nL_snow)
-  call get_SIS_tracer_pointer("salin_ice",TrReg,Tr_ice_salin_ptr,nL_ice)
+  call get_SIS_tracer_pointer("enth_ice", TrReg, Tr_ice_enth_ptr, nL_ice)
+  call get_SIS_tracer_pointer("enth_snow", TrReg, Tr_snow_enth_ptr, nL_snow)
+  call get_SIS_tracer_pointer("salin_ice", TrReg, Tr_ice_salin_ptr, nL_ice)
 ! call get_SIS_tracer_pointer("level_area",TrReg,Tr_ice_alvl_ptr,1)
 ! call get_SIS_tracer_pointer("level_mass",TrReg,Tr_ice_mlvl_ptr,1)
 
-!  call IST_chksum('before ice ridging ',IST,G,US,IG)
+!  call IST_chksum('before ice ridging ', IST, G, US, IG)
 
   if (present(rdg_rate)) rdg_rate(:,:)=0.0
   do j=jsc,jec; do i=isc,iec
@@ -565,7 +565,7 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, CS, US, d
     endif ! part_sz
   enddo; enddo ! j, i
 
-!  call IST_chksum('after ice ridging ',IST,G,US,IG)
+!  call IST_chksum('after ice ridging ', IST, G, US, IG)
 
 end subroutine ice_ridging
 
